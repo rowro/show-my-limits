@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Show My Limits",
+  "version": "0.1.0",
+  "identifier": "dev.clim.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Show My Limits",
+        "width": 344,
+        "height": 480,
+        "minWidth": 320,
+        "minHeight": 160,
+        "resizable": false,
+        "decorations": false,
+        "center": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "visible": false,
+        "minimizable": false,
+        "maximizable": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": {
+      "../proxy/initialize_ca.py": "proxy/initialize_ca.py",
+      "../proxy/limits_addon.py": "proxy/limits_addon.py",
+      "binaries/": "binaries/"
+    },
+    "shortDescription": "Claude usage, at a glance",
+    "category": "Utility",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2ODAyNEVENDlENTExQzgKUldUSUVkVko3U1NBSnFieWhwY3d2QnFTUm5ZVjYrS211SW1QN05ya3FsK0c5Q283RmhHRDE2L24K",
+      "endpoints": [
+        "https://github.com/rowro/show-my-limits/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

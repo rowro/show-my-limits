@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.test-build/
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+__pycache__/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Release secrets and local IDE state never belong in the public repository.
+.secrets/
+*.key
+*.p12
+*.pfx
+.vscode/
