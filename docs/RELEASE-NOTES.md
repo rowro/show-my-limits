@@ -1,11 +1,13 @@
-Show My Limits — first public test build.
+Show My Limits 0.1.1 — test release.
 
-- macOS: Apple Silicon and Intel (.dmg and updater archive).
-- Windows: x64 NSIS installer.
-- Linux: x64 AppImage and Debian package.
-- Signed in-app updates from GitHub Releases; installation requires a click.
-- mitmproxy is installed separately by the connection wizard after a checksum-verified download.
+- Linux: move the panel by dragging its logo/title; keep the chosen position on resize.
+- Linux: sudo can request network-component authentication through a zenity dialog. The GUI remains unprivileged; sudoers is unchanged.
+- Ubuntu/Debian: copy certificate trust commands from the setup wizard or Settings. Trust confirmation is now a visible button.
+- Distinguish the certificate's display name from its exported filename.
+- Explain DNS, TLS, timeout and capture-permission errors without retaining raw traffic logs.
+- Use platform-neutral helper-installation text.
+- macOS arm64/Intel, Windows x64 and Linux x64/arm64 installers and signed updater packages.
 
-macOS builds use ad-hoc signing and are not Apple-notarized. Approve the first launch for this specific app in macOS Privacy & Security if you trust the source. Windows builds do not have an Authenticode certificate.
+Linux graphical authentication still needs validation on the target Ubuntu VM. DEB recommends zenity; AppImage users may need to install it separately. Linux requires a supported kernel and appropriate capture privileges. A successful build does not prove capture works on a clean machine.
 
-Linux AppImage supports in-app installation of updates; Debian packages are updated manually. Local capture on Linux needs elevated privileges and a supported kernel. Windows/Linux capture and installation still need end-to-end validation on clean systems. Compilation is not a clean-install test.
+macOS builds remain ad-hoc signed without Apple notarization; Windows builds do not have Authenticode signing. Linux in-app updates use AppImage; DEB updates are installed manually.

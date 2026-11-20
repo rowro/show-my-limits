@@ -559,6 +559,28 @@ impl Shared {
             .collect::<Vec<_>>()
             .join("|");
         let mut command = helper_command(&helper);
+        #[cfg(target_os = "linux")]
+        {
+            let askpass = app
+                .path()
+                .resolve(
+                    "proxy/linux_askpass.sh",
+                    tauri::path::BaseDirectory::Resource,
+                )
+                .map_err(|e| e.to_string())?;
+            if !askpass.is_file() {
+                return Err(
+                    "В сборке отсутствует компонент запроса прав Linux. Переустановите приложение."
+                        .into(),
+                );
+            }
+            if !Path::new("/usr/bin/zenity").is_file() {
+                return Err("Для графического запроса прав установите zenity: sudo apt install zenity. Затем повторите запуск.".into());
+            }
+            // sudo invokes this only when it needs authentication without a TTY.
+            // The GUI never receives the password; it goes directly to sudo.
+            command.env("SUDO_ASKPASS", askpass);
+        }
         command
             .args([
                 "--mode",
@@ -768,6 +790,11 @@ fn publish_new_ca(generated: &Path, destination: &Path) -> Result<(), String> {
 
 fn capture_diagnostic(line: &str) -> Option<&'static str> {
     let line = line.to_lowercase();
+    if line.contains("sml_error:askpass_missing") {
+        return Some(
+            "Не найден zenity для графического запроса прав. Установите его: sudo apt install zenity.",
+        );
+    }
     if [
         "failed to elevate privileges",
         "not running as root",
@@ -779,7 +806,7 @@ fn capture_diagnostic(line: &str) -> Option<&'static str> {
     .any(|message| line.contains(message))
     {
         Some(
-            "Не удалось получить права администратора для перехвата Linux. Установка сертификата не выдаёт эти права. Графический запрос прав сетевого компонента пока не реализован.",
+            "Не удалось получить права администратора для перехвата Linux. Установка сертификата не выдаёт эти права. Подтвердите запрос пароля для сетевого компонента или проверьте возможность использования sudo.",
         )
     } else if line.contains("address already in use") {
         Some("Не удалось запустить перехватчик: сетевой адрес уже занят другим процессом.")
