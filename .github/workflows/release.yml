@@ -32,9 +32,10 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Show My Limits $VERSION" --notes-file docs/RELEASE-NOTES.md
           fi
-          ID=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.id')
-          DRAFT=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.draft')
+          ID=$(gh release view "$TAG" --json databaseId --jq '.databaseId')
+          DRAFT=$(gh release view "$TAG" --json isDraft --jq '.isDraft')
           test "$DRAFT" = true || { echo 'Refusing to modify a published release'; exit 1; }
+          gh release edit "$TAG" --target "$GITHUB_SHA"
           echo "id=$ID" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
   build:
