@@ -16,4 +16,12 @@ macOS builds are ad-hoc signed without Apple notarization until a Developer ID i
 
 Before publication, smoke-test first installation, CA trust, capture start/stop, quota receipt, app quit, and an update from the preceding version on every supported OS. A successful build is not proof of capture permissions or certificate trust.
 
-Before publication, run **Verify release artifacts** with the draft tag. It downloads all five updater payloads on a runner and verifies their signatures using the application public key and the same minisign library as Tauri; a modified payload must fail verification. This checks artifact authenticity, not installer permissions or an end-to-end update.
+Before publication, verify the draft locally using the maintainer's existing GitHub CLI authorization:
+
+```sh
+mkdir review
+gh release download vX.Y.Z --pattern '*.app.tar.gz' --pattern '*.AppImage' --pattern '*setup.exe' --pattern latest.json --dir review
+cargo run --locked --manifest-path tools/release-verifier/Cargo.toml -- src-tauri/tauri.conf.json review/latest.json review
+```
+
+The verifier checks all five payload signatures with the application public key and the same minisign library as Tauri; modified payloads must fail. The **Verify release artifacts** workflow keeps read-only permissions and can repeat this check after publication. GitHub hides drafts from that read-only workflow token; do not expand it to `contents:write` just to read a draft. Signature checks do not replace installer-permission or end-to-end update tests.

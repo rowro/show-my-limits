@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Draft or published release tag
+        description: Published release tag (drafts are checked locally)
         required: true
         default: v0.2.0
 permissions:
