@@ -597,6 +597,12 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("Could not initialize Show My Limits");
+    // Normal OS/session termination must use the same owned-helper cleanup as Quit.
+    #[cfg(unix)]
+    {
+        let handle = app.handle().clone();
+        ctrlc::set_handler(move || handle.exit(0)).expect("Could not register shutdown handler");
+    }
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
             #[cfg(target_os = "windows")]

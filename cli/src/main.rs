@@ -119,6 +119,9 @@ fn setup(paths: &Paths) -> Result<(), String> {
         })?,
     };
     if paths.cert().is_file() {
+        if !certificate::complete_store(&paths.ca()) {
+            return Err("Incomplete CA store; existing material was preserved. Restore the missing files from backup.".into());
+        }
         println!("Reusing certificate: {}", paths.cert().display());
         return Ok(());
     }
@@ -317,7 +320,45 @@ fn execute() -> Result<(), String> {
                 );
                 Ok(())
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                if certificate::details(&paths.cert()).is_none() {
+                    return Err("Run sml setup first".into());
+                }
+                if !trusted(&paths.cert())? {
+                    if !io::stdin().is_terminal() {
+                        return Err(
+                            "Run sml trust in an interactive terminal to authorize CA trust."
+                                .into(),
+                        );
+                    }
+                    let output = Command::new("/usr/bin/security")
+                        .args(["default-keychain", "-d", "user"])
+                        .output()
+                        .map_err(|e| e.to_string())?;
+                    if !output.status.success() {
+                        return Err("Cannot find the current user's default keychain".into());
+                    }
+                    let keychain = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+                    let keychain = Path::new(keychain.trim().trim_matches('"'));
+                    if !keychain.is_file() {
+                        return Err("The current user's default keychain is unavailable".into());
+                    }
+                    // No administrator domain or sudo: trust only for the current user.
+                    let status = Command::new("/usr/bin/security")
+                        .args(["add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k"])
+                        .arg(keychain)
+                        .arg(paths.cert())
+                        .status()
+                        .map_err(|e| e.to_string())?;
+                    if !status.success() || !trusted(&paths.cert())? {
+                        return Err("CA trust was not confirmed; capture was not started. Import the CA into your login keychain and enable SSL trust there.".into());
+                    }
+                }
+                println!("Certificate is trusted. Fully restart your client.");
+                Ok(())
+            }
+            #[cfg(target_os = "windows")]
             {
                 certificate::install(&paths.cert())?;
                 println!("Certificate installed. Fully restart your client.");
@@ -335,12 +376,11 @@ fn execute() -> Result<(), String> {
                     .unwrap_or("missing".into())
             );
             if let Some(c) = certificate::details(&paths.cert()) {
-                println!(
-                    "CA: {}\nSHA-256: {}\nTrusted: {}",
-                    c.name,
-                    c.sha256,
-                    trusted(&paths.cert())?
-                );
+                println!("CA: {}\nSHA-256: {}", c.name, c.sha256);
+                #[cfg(target_os = "linux")]
+                println!("System trust: not checked; run sml trust for distribution instructions.");
+                #[cfg(not(target_os = "linux"))]
+                println!("Trusted by OS: {}", trusted(&paths.cert())?);
             } else {
                 println!("CA: missing");
             }
@@ -407,8 +447,8 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
                 for host in &mut config.hosts {
                     *host = settings::normalize_host(host)?;
                 }
-                if !paths.cert().is_file() {
-                    return Err("Run sml setup and sml trust first".into());
+                if !certificate::complete_store(&paths.ca()) {
+                    return Err("Run sml setup and sml trust first. An incomplete existing CA store must be restored from backup.".into());
                 }
                 if !trusted(&paths.cert())? {
                     return Err(
@@ -483,7 +523,9 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
         }
     }
     let terminal = io::stdout().is_terminal();
-    if terminal { print!("\x1b[2J"); }
+    if terminal {
+        print!("\x1b[2J");
+    }
     let mut previous = String::new();
     let deadline = now() + 90.0;
     while !stop.load(Ordering::SeqCst) {
@@ -500,13 +542,17 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
         }
         let text = if capture.is_some() && state.is_none() {
             "Show My Limits\nStarting capture… Waiting for the helper and OS permission.\n".into()
-        } else { display(state.as_ref()) };
+        } else {
+            display(state.as_ref())
+        };
         if text != previous {
             if terminal {
                 print!("\x1b[H");
             }
             print!("{text}");
-            if terminal { print!("\x1b[J"); }
+            if terminal {
+                print!("\x1b[J");
+            }
             io::stdout().flush().map_err(|e| e.to_string())?;
             previous = text;
         }
@@ -543,6 +589,7 @@ mod cli_tests {
         assert!(owned.child.try_wait().unwrap().is_none());
         drop(owned);
         assert!(unrelated.try_wait().unwrap().is_none());
-        unrelated.kill().unwrap(); unrelated.wait().unwrap();
+        unrelated.kill().unwrap();
+        unrelated.wait().unwrap();
     }
 }

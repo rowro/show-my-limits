@@ -60,6 +60,7 @@ windows-sys = { version = "0.61", features = [
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+ctrlc = { version = "3", features = ["termination"] }
 
 [profile.release]
 codegen-units = 1

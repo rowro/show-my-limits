@@ -491,6 +491,9 @@ impl Shared {
         {
             return Err("Сначала создайте сертификат в мастере первоначальной настройки.".into());
         }
+        if !crate::certificate::complete_store(&self.paths.certificates) {
+            return Err("Хранилище сертификата неполное. Существующие файлы сохранены; восстановите сертификат и ключ из резервной копии.".into());
+        }
         let helper = self
             .find_helper(app, &inner.settings)
             .ok_or("Не найден mitmdump. Проверьте установку перехватчика.")?;
@@ -673,7 +676,9 @@ impl Shared {
             .join("mitmproxy-ca-cert.cer")
             .is_file()
         {
-            return Ok(());
+            return if crate::certificate::complete_store(&self.paths.certificates) { Ok(()) } else {
+                Err("Хранилище сертификата неполное. Существующие файлы сохранены без изменений.".into())
+            };
         }
         let settings = self
             .inner

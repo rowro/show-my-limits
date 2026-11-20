@@ -32,6 +32,13 @@ pub fn details(path: &Path) -> Option<CertificateDetails> {
     parse(&fs::read(path).ok()?)
 }
 
+/// Refuse to let a helper regenerate a partially deleted existing CA.
+pub fn complete_store(directory: &Path) -> bool {
+    details(&directory.join("mitmproxy-ca-cert.cer")).is_some()
+        && ["mitmproxy-ca.pem", "mitmproxy-dhparam.pem"].iter().all(|name|
+            fs::metadata(directory.join(name)).is_ok_and(|m| m.is_file() && m.len() > 0))
+}
+
 pub fn install(path: &Path) -> Result<(), String> {
     if details(path).is_none() {
         return Err("Сначала создайте корректный сертификат приложения.".into());
@@ -59,6 +66,12 @@ mod tests {
     #[test]
     fn invalid_certificate_has_no_identity() {
         assert!(parse(b"not a certificate").is_none());
+    }
+    #[test]
+    fn public_certificate_alone_is_not_a_complete_store() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("mitmproxy-ca-cert.cer"), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        assert!(!complete_store(directory.path()));
     }
     #[test]
     fn certificate_identity_matches_openssl() {
