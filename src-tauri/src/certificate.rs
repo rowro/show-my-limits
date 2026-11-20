@@ -40,7 +40,11 @@ pub fn install(path: &Path) -> Result<(), String> {
     {
         crate::macos_trust::install(path)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_trust::install(path)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err(
             "Установка по кнопке пока доступна на macOS. Используйте ручной импорт сертификата."

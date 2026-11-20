@@ -52,7 +52,7 @@ impl DesktopState {
         self.lease
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(7))
+            .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(15))
     }
 }
 #[cfg(test)]
@@ -65,7 +65,7 @@ mod tests {
         assert!(!state.active());
         assert!(state.heartbeat(PROTOCOL));
         assert!(state.active());
-        assert!(!state.active_at(Instant::now() + Duration::from_secs(8)));
+        assert!(!state.active_at(Instant::now() + Duration::from_secs(16)));
         state.detach();
         assert!(!state.active());
     }

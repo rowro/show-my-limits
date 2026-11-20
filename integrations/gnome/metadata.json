@@ -3,6 +3,6 @@
   "name": "Show My Limits",
   "description": "Claude quota percentages and progress in the GNOME panel. Requires the Show My Limits desktop app.",
   "shell-version": ["46"],
-  "version": 1,
+  "version": 2,
   "url": "https://github.com/rowro/show-my-limits"
 }

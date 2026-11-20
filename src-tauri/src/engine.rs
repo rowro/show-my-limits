@@ -131,6 +131,7 @@ pub struct Inner {
     pub error: Option<String>,
     pub capture_issue: Arc<Mutex<Option<String>>>,
     pub run_id: Option<String>,
+    pub last_state: Option<ProxyState>,
 }
 pub struct Shared {
     pub paths: Paths,
@@ -215,6 +216,7 @@ impl Shared {
                 error: None,
                 capture_issue: Arc::new(Mutex::new(None)),
                 run_id: None,
+                last_state: None,
             }),
         })
     }
@@ -296,12 +298,10 @@ impl Shared {
                 inner.error = Some(issue);
             }
         }
-        let state = fs::metadata(self.paths.proxy.join("state.json"))
-            .ok()
-            .filter(|m| m.len() < 262_144)
-            .and_then(|_| fs::read(self.paths.proxy.join("state.json")).ok())
-            .and_then(|data| serde_json::from_slice::<ProxyState>(&data).ok())
-            .unwrap_or_default();
+        // Each owned capture writes to a distinct directory. A legacy helper or
+        // a delayed previous worker can no longer overwrite this session's data.
+        let run_id = inner.run_id.clone();
+        let state = read_capture_state(&self.paths.proxy, run_id.as_deref(), &mut inner.last_state);
         let pid = inner.child.as_ref().map(|child| child.id());
         let active = current_capture_state(
             &state,
@@ -359,7 +359,16 @@ impl Shared {
         } else {
             (Some(false), None)
         };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        let (certificate_trusted, certificate_trust_error) = if certificate.is_file() {
+            match crate::windows_trust::is_trusted(&certificate) {
+                Ok(trusted) => (Some(trusted), None),
+                Err(error) => (Some(false), Some(error)),
+            }
+        } else {
+            (Some(false), None)
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let (certificate_trusted, certificate_trust_error) = (None, None);
         AppStatus {
             settings: inner.settings.clone(),
@@ -585,6 +594,9 @@ impl Shared {
                 .unwrap_or_default()
                 .as_nanos()
         );
+        let state_dir = self.paths.proxy.join("runs").join(&run_id);
+        fs::create_dir_all(&state_dir)
+            .map_err(|e| format!("Не удалось подготовить состояние захвата: {e}"))?;
         let mut command = helper_command(&helper);
         #[cfg(target_os = "linux")]
         {
@@ -629,7 +641,7 @@ impl Shared {
                 "-s",
             ])
             .arg(addon)
-            .env("SML_STATE_DIR", &self.paths.proxy)
+            .env("SML_STATE_DIR", &state_dir)
             .env(
                 "SML_HOSTS",
                 serde_json::to_string(&inner.settings.hosts).map_err(|e| e.to_string())?,
@@ -650,6 +662,7 @@ impl Shared {
         }
         inner.capture_issue = issue;
         inner.run_id = Some(run_id);
+        inner.last_state = None;
         inner.child = Some(child);
         inner.started_at = now();
         inner.stop_at = None;
@@ -820,6 +833,32 @@ fn publish_new_ca(generated: &Path, destination: &Path) -> Result<(), String> {
         })?;
     }
     fs::rename(generated, destination).map_err(|e| format!("Не удалось сохранить сертификат: {e}"))
+}
+
+fn read_capture_state(
+    root: &Path,
+    run_id: Option<&str>,
+    cache: &mut Option<ProxyState>,
+) -> ProxyState {
+    let Some(run_id) = run_id else {
+        return ProxyState::default();
+    };
+    let path = root.join("runs").join(run_id).join("state.json");
+    let fresh = fs::metadata(&path)
+        .ok()
+        .filter(|m| m.len() < 262_144)
+        .and_then(|_| fs::read(&path).ok())
+        .and_then(|bytes| serde_json::from_slice::<ProxyState>(&bytes).ok())
+        .filter(|state| state.run_id.as_deref() == Some(run_id));
+    if let Some(fresh) = fresh {
+        *cache = Some(fresh);
+    }
+    // Preserve the last coherent sample across a short read failure. Its own
+    // heartbeat still expires normally; this does not keep dead capture alive.
+    cache
+        .clone()
+        .filter(|state| state.run_id.as_deref() == Some(run_id))
+        .unwrap_or_default()
 }
 
 fn current_capture_state(
@@ -994,6 +1033,55 @@ fn system_proxy_active() -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn capture_sessions_ignore_legacy_writers_and_keep_a_coherent_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let legacy = serde_json::json!({"runId":"legacy", "pid":1, "running":true, "updatedAt":100.0, "startedAt":90.0, "profiles":[]});
+        fs::write(root.join("state.json"), legacy.to_string()).unwrap();
+        let mut cache = None;
+        assert!(
+            read_capture_state(root, Some("owned"), &mut cache)
+                .run_id
+                .is_none()
+        );
+        let current_dir = root.join("runs/owned");
+        fs::create_dir_all(&current_dir).unwrap();
+        let mut current = legacy.clone();
+        current["runId"] = "owned".into();
+        fs::write(current_dir.join("state.json"), current.to_string()).unwrap();
+        assert_eq!(
+            read_capture_state(root, Some("owned"), &mut cache)
+                .run_id
+                .as_deref(),
+            Some("owned")
+        );
+        // A concurrent write/read interruption must not briefly show startup or fake empty quotas.
+        fs::write(current_dir.join("state.json"), b"{").unwrap();
+        assert_eq!(
+            read_capture_state(root, Some("owned"), &mut cache).updated_at,
+            100.0
+        );
+        fs::write(current_dir.join("state.json"), legacy.to_string()).unwrap();
+        assert_eq!(
+            read_capture_state(root, Some("owned"), &mut cache)
+                .run_id
+                .as_deref(),
+            Some("owned")
+        );
+        assert!(
+            read_capture_state(root, Some("next"), &mut cache)
+                .run_id
+                .is_none()
+        );
+        assert!(!current_capture_state(
+            &cache.unwrap(),
+            Some("owned"),
+            true,
+            90.0,
+            150.0
+        ));
+    }
+    #[test]
     fn worker_pid_may_differ_but_launch_identity_must_match() {
         let mut state = ProxyState {
             pid: 9999,
@@ -1072,6 +1160,7 @@ mod tests {
                 error: None,
                 capture_issue: Arc::new(Mutex::new(None)),
                 run_id: None,
+                last_state: None,
             }),
             installation: Mutex::new(Installation::default()),
             certificate_installation: Mutex::new(()),

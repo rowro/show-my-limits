@@ -1,8 +1,10 @@
-Show My Limits 0.1.4
+Show My Limits 0.1.5
 
-- Added an optional native GNOME 46 extension for Ubuntu 24.04: percentage and progress in the panel, quota popover on left click, application menu on right click.
-- Install the extension from Settings → GNOME panel. First installation may require logging out and back in, then enabling the extension.
-- Standard tray returns automatically when the extension is disabled or stops responding.
-- Existing settings, certificates and helper installation are preserved.
+- Linux/Windows: visible application logo without quota data; transparent percentage artwork includes the percent sign, without a frame or reserved label gap.
+- Capture state is isolated per launch. Brief read errors retain a coherent sample; legacy workers cannot overwrite current-session data.
+- GNOME: tolerate transient transport delays and change fallback tray visibility only on transitions.
+- GNOME: install during first setup; update by button and finish enabling automatically after next login. A button opens GNOME's normal logout confirmation; no terminal commands needed.
+- Windows: check the exact current CA in native Root/Disallowed stores and install it into Current User Root by button. No firewall or TLS verification changes.
+- Mock client: show unverified peer issuer and certificate fingerprint when TLS validation fails.
 
-GNOME Shell interaction still requires a manual smoke test before publication. Other Linux desktops retain the standard tray.
+GNOME interaction and Windows capture still need manual testing on the target systems. Existing CA and settings are preserved; legacy root proxy state is not used as a current quota sample.

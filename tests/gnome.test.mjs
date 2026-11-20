@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {derive, percent, remaining, resetText} from '../integrations/gnome/model.js';
+import {derive, percent, remaining, resetText, SnapshotTracker} from '../integrations/gnome/model.js';
 const now = 10000;
 const normal = {protocol: 1, now, phase: 'listening', setupComplete: true, connectionIssue: false,
     profile: {host: 'gateway.example', observedAt: now - 2,
@@ -31,4 +31,18 @@ test('GNOME reset text does not invent a quota refill or invalid date', () => {
     assert.match(resetText(undefined, now), /неизвестно/);
     assert.match(resetText(Infinity, now), /неизвестно/);
     assert.match(resetText(now + 3660, now), /1 ч 1 мин/);
+});
+
+test('GNOME retains the last coherent snapshot through brief timeouts, but not a restart', () => {
+    const tracker = new SnapshotTracker();
+    tracker.accept(normal, 1000);
+    assert.equal(tracker.fail(3000), normal);
+    assert.equal(tracker.fail(5000), normal);
+    assert.equal(tracker.fail(7000), null);
+    tracker.accept(normal, 8000);
+    assert.equal(tracker.fail(24000), null);
+    tracker.reset();
+    assert.equal(tracker.fail(25000), null);
+    tracker.accept({...normal, profile: null}, 26000);
+    assert.equal(tracker.snapshot.profile, null);
 });

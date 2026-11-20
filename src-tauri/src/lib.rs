@@ -11,7 +11,11 @@ mod linux_panel;
 #[cfg(target_os = "macos")]
 mod macos_trust;
 mod quota;
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+mod tray_image;
 mod updates;
+#[cfg(target_os = "windows")]
+mod windows_trust;
 
 use engine::{AppStatus, Settings, Shared};
 use std::sync::{
@@ -54,8 +58,13 @@ fn gnome_status() -> Result<(), String> {
 fn install_gnome_extension() -> Result<(), String> {
     Err("GNOME доступен на Linux.".into())
 }
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn logout_gnome_session() -> Result<(), String> {
+    Err("GNOME доступен на Linux.".into())
+}
 #[cfg(target_os = "linux")]
-use gnome::{gnome_status, install_gnome_extension};
+use gnome::{gnome_status, install_gnome_extension, logout_gnome_session};
 
 #[tauri::command]
 fn get_status(app: tauri::AppHandle, state: State<'_, Shared>) -> AppStatus {
@@ -398,61 +407,6 @@ mod panel_tests {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn tray_image(title: &str) -> tauri::image::Image<'static> {
-    // Platform trays do not all support text labels. Render numbers into an icon.
-    let glyphs = [
-        [7, 5, 5, 5, 7],
-        [2, 6, 2, 2, 7],
-        [7, 1, 7, 4, 7],
-        [7, 1, 7, 1, 7],
-        [5, 5, 7, 1, 1],
-        [7, 4, 7, 1, 7],
-        [7, 4, 7, 5, 7],
-        [7, 1, 1, 1, 1],
-        [7, 5, 7, 5, 7],
-        [7, 5, 7, 1, 7],
-    ];
-    let text = title.trim_end_matches('%');
-    let mut pixels = vec![0u8; 32 * 32 * 4];
-    for y in 2..30 {
-        for x in 1..31 {
-            let i = (y * 32 + x) * 4;
-            pixels[i..i + 4].copy_from_slice(&[222, 239, 230, 255]);
-        }
-    }
-    let characters: Vec<_> = if text == "—" {
-        vec!['-']
-    } else {
-        text.chars().take(3).collect()
-    };
-    let scale = if characters.len() > 2 { 2 } else { 3 };
-    let total = characters.len() * 4 * scale - scale;
-    let start = (32 - total) / 2;
-    for (index, character) in characters.iter().enumerate() {
-        let rows = character
-            .to_digit(10)
-            .map(|d| glyphs[d as usize])
-            .unwrap_or([0, 0, 7, 0, 0]);
-        for (y, row) in rows.iter().enumerate() {
-            for x in 0..3 {
-                if row & (1 << (2 - x)) == 0 {
-                    continue;
-                }
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        let px = start + index * 4 * scale + x * scale + dx;
-                        let py = (32 - 5 * scale) / 2 + y * scale + dy;
-                        let i = (py * 32 + px) * 4;
-                        pixels[i..i + 4].copy_from_slice(&[30, 80, 61, 255]);
-                    }
-                }
-            }
-        }
-    }
-    tauri::image::Image::new_owned(pixels, 32, 32)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -463,6 +417,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             install_helper,
             gnome_status,
+            logout_gnome_session,
             install_gnome_extension,
             get_status,
             updates::update_status,
@@ -489,6 +444,7 @@ pub fn run() {
             {
                 app.manage(desktop_state::DesktopState::default());
                 gnome::start(app.handle());
+                gnome::finish_pending_setup(app.handle());
             }
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -541,19 +497,19 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             let builder = builder.title("—");
             #[cfg(target_os = "windows")]
-            let builder = builder.icon(tray_image("—"));
-            // AppIndicator requires an icon for its native text label. A transparent
-            // pixel avoids a second logo or a box around the percentage.
+            let builder = builder.icon(tray_image::render("—", false));
             #[cfg(target_os = "linux")]
-            let builder = builder
-                .icon(tauri::image::Image::new_owned(vec![0; 4], 1, 1))
-                .title("—");
+            let builder = builder.icon(tray_image::render("—", false));
             builder.build(app)?;
             let startup = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || startup.state::<Shared>().start_on_launch(&startup));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut previous_title = String::new();
+                #[cfg(target_os = "linux")]
+                let mut tray_visible = true;
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
+                let mut previous_light = None;
                 loop {
                     let status = handle.state::<Shared>().status(&handle);
                     #[cfg(target_os = "linux")]
@@ -572,12 +528,23 @@ pub fn run() {
                     };
                     if let Some(tray) = handle.tray_by_id("show-my-limits") {
                         #[cfg(target_os = "linux")]
-                        let _ = tray.set_visible(!handle.state::<desktop_state::DesktopState>().active());
-                        if title != previous_title {
-                            #[cfg(any(target_os = "macos", target_os = "linux"))]
+                        {
+                            let visible = !handle.state::<desktop_state::DesktopState>().active();
+                            if visible != tray_visible {
+                                if tray.set_visible(visible).is_ok() { tray_visible = visible; }
+                            }
+                        }
+                        #[cfg(any(target_os = "linux", target_os = "windows"))]
+                        let light = cfg!(target_os = "windows") && handle.get_webview_window("main").and_then(|w| w.theme().ok()) == Some(tauri::Theme::Light);
+                        #[cfg(target_os = "macos")]
+                        let changed = title != previous_title;
+                        #[cfg(any(target_os = "linux", target_os = "windows"))]
+                        let changed = title != previous_title || previous_light != Some(light);
+                        if changed {
+                            #[cfg(target_os = "macos")]
                             let _ = tray.set_title(Some(&title));
-                            #[cfg(target_os = "windows")]
-                            let _ = tray.set_icon(Some(tray_image(&title)));
+                            #[cfg(any(target_os = "linux", target_os = "windows"))]
+                            { let _ = tray.set_icon(Some(tray_image::render(&title, light))); previous_light = Some(light); }
                             previous_title.clone_from(&title);
                         }
                         let _ = tray.set_tooltip(Some(format!(

@@ -8,7 +8,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import {derive, percent, remaining, resetText} from './model.js';
+import {derive, percent, remaining, resetText, SnapshotTracker} from './model.js';
 
 const BUS = 'io.github.rowro.ShowMyLimits';
 const PATH = '/io/github/rowro/ShowMyLimits';
@@ -144,6 +144,7 @@ const LimitsIndicator = GObject.registerClass(class LimitsIndicator extends Pane
 export default class ShowMyLimitsExtension extends Extension {
     enable() {
         this._enabled = true;
+        this._tracker = new SnapshotTracker();
         this._owner = null;
         this._pending = false;
         this._cancellable = new Gio.Cancellable();
@@ -152,7 +153,7 @@ export default class ShowMyLimitsExtension extends Extension {
         this._indicator.update(null);
         this._watcher = Gio.bus_watch_name(Gio.BusType.SESSION, BUS, Gio.BusNameWatcherFlags.NONE,
             (_connection, _name, owner) => { if (this._enabled) { this._owner = owner; this._poll(); } },
-            () => { if (this._enabled) { this._owner = null; this._indicator?.update(null); } });
+            () => { if (this._enabled) { this._owner = null; this._tracker.reset(); this._indicator?.update(null); } });
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
             this._poll();
             return GLib.SOURCE_CONTINUE;
@@ -163,7 +164,7 @@ export default class ShowMyLimitsExtension extends Extension {
         return new Promise((resolve, reject) => {
             Gio.DBus.session.call(owner, PATH, IFACE, method, parameters,
                 signature ? new GLib.VariantType(signature) : null,
-                Gio.DBusCallFlags.NO_AUTO_START, 1500, this._cancellable,
+                Gio.DBusCallFlags.NO_AUTO_START, 5000, this._cancellable,
                 (connection, result) => {
                     try { resolve(connection.call_finish(result).deep_unpack()); }
                     catch (error) { reject(error); }
@@ -183,16 +184,16 @@ export default class ShowMyLimitsExtension extends Extension {
             if (json.length > 65536)
                 throw new Error('Invalid state size');
             const snapshot = JSON.parse(json);
-            if (snapshot?.protocol !== 1 || !Number.isFinite(snapshot.now) || Math.abs(Date.now() / 1000 - snapshot.now) > 10)
+            if (snapshot?.protocol !== 1 || !Number.isFinite(snapshot.now) || Math.abs(Date.now() / 1000 - snapshot.now) > 30)
                 throw new Error('Unsupported or stale state');
             // A rendering failure must never keep the fallback tray hidden.
-            this._indicator.update(snapshot);
+            this._indicator.update(this._tracker.accept(snapshot));
             const [accepted] = await this._call('Heartbeat', new GLib.Variant('(u)', [1]), '(b)');
             if (!accepted)
                 throw new Error('Protocol mismatch');
         } catch {
             if (this._enabled && this._owner === owner && this._cancellable === session)
-                this._indicator.update(null);
+                this._indicator.update(this._tracker.fail());
         } finally {
             if (this._cancellable === session) this._pending = false;
         }

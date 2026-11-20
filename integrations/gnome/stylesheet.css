@@ -1,5 +1,5 @@
 .sml-panel-box { spacing: 6px; }
-.sml-panel-label { font-variant-numeric: tabular-nums; }
+.sml-panel-label { font-feature-settings: "tnum"; }
 .sml-panel-progress { width: 24px; height: 4px; }
 .sml-limits { width: 300px; padding: 12px 16px; spacing: 12px; }
 .sml-heading { font-weight: bold; }

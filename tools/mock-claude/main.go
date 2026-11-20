@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -125,9 +127,21 @@ func send(ctx context.Context, client *http.Client, target string, expected http
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "Show-My-Limits-Mock/1")
+	req.Header.Set("User-Agent", "Show-My-Limits-Mock/3")
 	resp, err := client.Do(req)
 	if err != nil {
+		var verify *tls.CertificateVerificationError
+		if errors.As(err, &verify) {
+			fmt.Fprintln(out, "TLS validation failed; certificate verification remains enabled.")
+			for index, cert := range verify.UnverifiedCertificates {
+				fmt.Fprintf(out, "Unverified peer chain[%d]: issuer=%q | SHA-256=%X\n", index, cert.Issuer.CommonName, sha256.Sum256(cert.Raw))
+			}
+			if runtime.GOOS == "windows" {
+				fmt.Fprintln(out, "Install the current app certificate using the Windows certificate button in Show My Limits, then restart this client. A firewall does not need to be disabled.")
+			} else {
+				fmt.Fprintln(out, "Compare the issuer with the CA in Show My Limits and follow the app's certificate trust instructions.")
+			}
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -183,7 +197,7 @@ func run() error {
 		return err
 	}
 	u, _ := url.Parse(target)
-	fmt.Printf("Show My Limits — synthetic Claude client v2 (PID %d)\n", os.Getpid())
+	fmt.Printf("Show My Limits — synthetic Claude client v3 (PID %d)\n", os.Getpid())
 	fmt.Printf("Server in Show My Limits: %s\nScenario: %s | Ctrl+C to stop\n", u.Hostname(), *name)
 	fmt.Println("No Claude account, messages or tokens are used. Only synthetic quota values are sent.")
 	if *caFile != "" {

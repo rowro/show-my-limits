@@ -39,3 +39,19 @@ export function resetText(reset, now = Date.now() / 1000) {
     });
     return `Сброс ${date} · через ${duration}`;
 }
+
+// Keep transient transport errors separate from real app/process disappearance.
+export class SnapshotTracker {
+    constructor() { this.reset(); }
+    reset() { this.snapshot = null; this.lastSuccess = 0; this.failures = 0; }
+    accept(snapshot, now = Date.now()) {
+        this.snapshot = snapshot;
+        this.lastSuccess = now;
+        this.failures = 0;
+        return snapshot;
+    }
+    fail(now = Date.now()) {
+        this.failures++;
+        return this.failures < 3 && now - this.lastSuccess < 15000 ? this.snapshot : null;
+    }
+}

@@ -12,10 +12,10 @@ const devTools = !native && import.meta.env.DEV;
 const demo = !native && new URLSearchParams(location.search).has("demo");
 const root = document.querySelector<HTMLDivElement>("#app")!;
 let view: "overview" | "setup" | "settings" = "setup";
-let appVersion = "0.1.4";
+let appVersion = "0.1.5";
 type UpdateStatus = { phase: string; version: string | null; downloaded: number; total: number | null; error: string | null; manualInstall: boolean };
 let updateState: UpdateStatus = { phase: "idle", version: null, downloaded: 0, total: null, error: null, manualInstall: false };
-type GnomeStatus = { supported: boolean; installed: boolean; active: boolean; message: string };
+type GnomeStatus = { supported: boolean; pending: boolean; installed: boolean; active: boolean; message: string };
 let gnomeStatus: GnomeStatus | null = null;
 let firstStatus = true;
 let setupStep = 0;
@@ -214,6 +214,7 @@ function setup() {
     `<section class="setup-step"><span class="step-number ${ready ? "done" : ""}">${ready ? icon("check") : "2"}</span><div><h3>Сертификат <span class="pill ${ready ? "good" : ""}">${ready ? "Создан" : "Не создан"}</span></h3><p>Локальный, отдельный для этого приложения.</p><button class="secondary" data-action="certificate" ${!helper || ready || busy ? "disabled" : ""}>${ready ? "Сертификат готов" : busy && !installing ? "Подготавливаем…" : "Создать сертификат"}</button></div></section>`,
     `<section class="setup-step"><span class="step-number ${trusted ? "done" : ""}">${trusted ? icon("check") : "3"}</span><div><h3>Доверие сертификату <span class="pill ${trusted ? "good" : ""}">${trusted ? "Готово" : "Нужна установка"}</span></h3>
     ${state.setup.platform === "macos" ? `<p>${trusted ? "Доверие настроено. После включения перехватчика полностью выйди из Claude через ⌘Q и открой его заново." : "Добавим сертификат в связку «Система» и настроим доверие для HTTPS. macOS может запросить два подтверждения: для импорта и для доверия. Пароль вводится в системных окнах."}</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${busy && pendingAction === "install-certificate" ? "Ожидаем разрешения…" : trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
+    ${state.setup.platform === "windows" ? `<p>Установим текущий сертификат в доверенные корневые центры текущего пользователя Windows.</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
     ${identity}
     ${state.setup.platform === "macos" ? `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}</details>` : `<div class="trust-guide">${trust}</div>${state.setup.platform === "windows" ? `<button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}Открыть сертификат</button>` : ""}<button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}`}
     <p class="subtle">Получение нового ответа Claude подтвердит, что клиент доверяет сертификату.</p></div></section>`,
@@ -235,7 +236,7 @@ function settings() {
     <fieldset><legend>Запуск</legend><label class="client-option"><input type="checkbox" id="launch-at-login" ${state.setup.launchAtLogin ? "checked" : ""} ${state.setup.launchAtLogin == null ? "disabled" : ""}/><span><strong>Запускать вместе с ОС</strong><small>В фоне, со значком в трее.</small></span></label><p class="field-help">${state.setup.launchAtLogin == null ? "Не удалось прочитать настройку автозапуска." : state.setup.platform === "macos" ? "Для автозапуска держи приложение в «Программах»." : "Настройка применяется сразу."}</p></fieldset>
     <section id="gnome-section"></section>
     <section id="updates-section"></section>
-    <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p><details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Система» открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="open-certificate">Открыть сертификат</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
+    <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p><details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Система» открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="${state.setup.platform === "windows" ? "install-certificate" : "open-certificate"}">${state.setup.platform === "windows" ? "Установить текущий сертификат" : "Открыть сертификат"}</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
     ${connectionFields({ ...s, ...(settingsDraft || {}) })}
     <p class="field-help">Если изменить сервер или процессы, захват перезапустится при сохранении.</p></form>`;
 }
@@ -249,7 +250,7 @@ function renderGnome() {
   if (deferDuringPointer(renderGnome)) return;
   const section = document.querySelector<HTMLElement>("#gnome-section");
   if (!section) return;
-  setMarkupIfChanged(section, `${state.setup.platform === "linux" ? `<fieldset><legend>Панель GNOME</legend><p class="field-help">${esc(gnomeStatus?.message || "Нативные проценты и прогресс для GNOME 46 (Ubuntu 24.04).")}</p>${gnomeStatus?.supported ? `<button type="button" class="secondary" data-action="install-gnome" ${busy ? "disabled" : ""}>${gnomeStatus.installed ? "Обновить расширение" : "Установить расширение"}</button>` : ""}${gnomeStatus?.installed && !gnomeStatus.active ? `<p class="field-help">После входа в сеанс включи расширение:</p><pre class="trust-command"><code>gnome-extensions enable show-my-limits@rowro.github.io</code></pre>` : ""}</fieldset>` : ""}`);
+  setMarkupIfChanged(section, `${state.setup.platform === "linux" ? `<fieldset><legend>Панель GNOME</legend><p class="field-help">${esc(gnomeStatus?.message || "Нативные проценты и прогресс для GNOME 46 (Ubuntu 24.04).")}</p>${gnomeStatus?.supported ? `<button type="button" class="secondary" data-action="install-gnome" ${busy ? "disabled" : ""}>${gnomeStatus.installed ? "Обновить расширение" : "Установить расширение"}</button>` : ""}${gnomeStatus?.pending ? `<button type="button" class="secondary" data-action="gnome-logout">Выйти из сеанса…</button><p class="field-help">Ubuntu попросит подтвердить выход. После входа расширение включится автоматически.</p>` : ""}</fieldset>` : ""}`);
 }
 
 function renderUpdates() {
@@ -265,7 +266,7 @@ function renderFooter() {
   renderUpdates();
   renderGnome();
   const phase = state.capture.phase;
-  const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Сбой TLS-соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
+  const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Ошибка соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
   setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
   const wizardNav = view === "setup" ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy || setupStep === 0 ? "disabled" : ""}>Назад</button>${setupStep === 3 ? `<button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Подключаем…" : "Подключить"}</button>` : `<button class="primary" data-action="setup-next" ${busy || !setupStepReady() ? "disabled" : ""}>Далее${icon("arrow")}</button>`}</div>` : "";
   setMarkupIfChanged(document.querySelector("#screen-actions")!, `${wizardNav}${view === "settings" ? `<button class="primary screen-save" type="submit" form="settings-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Сохранить"}</button>` : ""}`);
@@ -283,7 +284,18 @@ async function refresh() {
 
 async function finishSetup() {
   if (needsSetup(state)) return;
-  if (native) await invoke("complete_setup");
+  if (native) {
+    await invoke("complete_setup");
+    if (state.setup.platform === "linux") {
+      try {
+        gnomeStatus = await invoke<GnomeStatus>("gnome_status");
+        if (gnomeStatus.supported && !gnomeStatus.installed) {
+          gnomeStatus = await invoke<GnomeStatus>("install_gnome_extension");
+          toast = gnomeStatus.message;
+        }
+      } catch (error) { toast = `Перехват включён. Расширение GNOME можно установить позже в настройках: ${String(error)}`; }
+    }
+  }
   else { state.capture.phase = "starting"; state.capture.startedAt = state.now; }
   view = "overview";
   await refresh(); render();
@@ -325,6 +337,7 @@ async function action(name: string) {
   if (busy) return;
   busy = true; pendingAction = name; toast = null; if (view === "setup") render(); else renderFooter();
   try {
+    if (name === "gnome-logout") await invoke("logout_gnome_session");
     if (name === "install-gnome") {
       gnomeStatus = await invoke<GnomeStatus>("install_gnome_extension");
       toast = gnomeStatus.message;

@@ -87,6 +87,7 @@ pub fn start(app: &tauri::AppHandle) {
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationStatus {
     supported: bool,
+    pending: bool,
     installed: bool,
     active: bool,
     message: String,
@@ -116,17 +117,21 @@ fn status(app: &tauri::AppHandle) -> Result<IntegrationStatus, String> {
         .is_some_and(|v| v.split('.').next() == Some("46"));
     let installed = extension_dir()?.join("metadata.json").is_file();
     let active = app.state::<DesktopState>().active();
-    let message = if active {
+    let pending = pending_file(app)?.is_file();
+    let message = if pending {
+        "Расширение установлено. Выйди из сеанса Ubuntu и войди снова — приложение само включит его. Команды не нужны."
+    } else if active {
         "Расширение подключено. Левый клик — лимиты, правый — меню."
     } else if !supported {
         "Первая версия расширения поддерживает GNOME 46 (Ubuntu 24.04). На других оболочках работает обычный трей."
     } else if installed {
-        "Расширение установлено. Включи Show My Limits в приложении «Расширения». После первой установки может понадобиться выйти из сеанса Ubuntu и войти снова."
+        "Расширение установлено. Нажми «Подключить расширение»: приложение завершит включение автоматически."
     } else {
         "Проценты и прогресс в панели GNOME. Левый клик — лимиты, правый — меню."
     };
     Ok(IntegrationStatus {
         supported,
+        pending,
         installed,
         active,
         message: message.into(),
@@ -164,15 +169,103 @@ pub async fn install_gnome_extension(app: tauri::AppHandle) -> Result<Integratio
             fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
             fs::rename(temporary, dir.join(name)).map_err(|e| e.to_string())?;
         }
-        // GNOME may not discover a new extension until the next login. An enable
-        // failure is reported as installed, not as a failed file installation.
+        // Finish through an owned one-shot autostart on the next GNOME session.
+        // A fresh Shell can discover our files; users never need terminal commands.
+        schedule_setup(&app)?;
         let _ = Command::new("gnome-extensions")
             .args(["enable", UUID])
             .output();
         let mut result = status(&app)?;
-        result.message = "Расширение установлено. Для загрузки новой версии выйди из сеанса Ubuntu и войди снова. Затем при необходимости включи расширение командой ниже.".into();
+        result.message = "Расширение установлено. Выйди из сеанса Ubuntu и войди снова — приложение само включит его. Команды не нужны.".into();
         Ok(result)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn pending_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("gnome-setup.pending"))
+}
+fn autostart_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("autostart/show-my-limits-gnome-setup.desktop")
+}
+fn desktop_exec(path: &str) -> Result<String, String> {
+    if path.contains(['\n', '\r']) {
+        return Err("Некорректный путь приложения.".into());
+    }
+    let escaped = path
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('`', "\\`")
+        .replace('$', "\\$")
+        .replace('%', "%%");
+    Ok(format!("\"{escaped}\" --finish-gnome-setup"))
+}
+fn schedule_setup(app: &tauri::AppHandle) -> Result<(), String> {
+    let executable = std::env::var_os("APPIMAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(std::env::current_exe().map_err(|e| e.to_string())?);
+    let exec = desktop_exec(&executable.to_string_lossy())?;
+    let autostart = autostart_file();
+    fs::create_dir_all(autostart.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::write(&autostart, format!("# Show My Limits one-shot GNOME setup\n[Desktop Entry]\nType=Application\nName=Show My Limits — GNOME setup\nExec={exec}\nOnlyShowIn=GNOME;\nTerminal=false\nX-GNOME-Autostart-enabled=true\n")).map_err(|e| e.to_string())?;
+    let marker = pending_file(app)?;
+    fs::create_dir_all(marker.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::write(marker, b"1").map_err(|e| e.to_string())
+}
+pub fn finish_pending_setup(app: &tauri::AppHandle) {
+    let Ok(marker) = pending_file(app) else {
+        return;
+    };
+    if !marker.is_file() {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..15 {
+            if handle.state::<DesktopState>().active() {
+                let _ = fs::remove_file(&marker);
+                let _ = fs::remove_file(autostart_file());
+                return;
+            }
+            let _ = Command::new("gnome-extensions")
+                .args(["enable", UUID])
+                .output();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        // Keep the marker if Shell has not discovered it yet; retry next login.
+    });
+}
+#[tauri::command]
+pub fn logout_gnome_session() -> Result<(), String> {
+    // GNOME shows its own logout confirmation; never force logout or discard work.
+    let result = Command::new("gnome-session-quit")
+        .arg("--logout")
+        .spawn()
+        .map_err(|_| {
+            "Не удалось открыть окно выхода. Выйди из сеанса через меню Ubuntu.".to_string()
+        })?;
+    drop(result);
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn desktop_entry_exec_keeps_paths_literal() {
+        assert_eq!(
+            desktop_exec("/tmp/Show My Limits.AppImage").unwrap(),
+            "\"/tmp/Show My Limits.AppImage\" --finish-gnome-setup"
+        );
+        assert!(desktop_exec("/tmp/foo\nExec=bad").is_err());
+        assert!(
+            desktop_exec("/tmp/100%$test.AppImage")
+                .unwrap()
+                .contains("100%%\\$test")
+        );
+    }
 }

@@ -93,8 +93,12 @@ func TestRealTLSHeaderRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer untrusted.CloseIdleConnections()
-	if err := send(context.Background(), untrusted, target, want, io.Discard); err == nil {
+	var failure bytes.Buffer
+	if err := send(context.Background(), untrusted, target, want, &failure); err == nil {
 		t.Fatal("untrusted server certificate accepted")
+	}
+	if !strings.Contains(failure.String(), "Unverified peer chain[0]") || !strings.Contains(failure.String(), "SHA-256=") || strings.Contains(failure.String(), "TLS verified") {
+		t.Fatal("certificate failure lacks diagnostic context or claims trust: ", failure.String())
 	}
 }
 
