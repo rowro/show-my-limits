@@ -2,6 +2,8 @@ mod capture_conflict;
 mod certificate;
 mod engine;
 mod installer;
+#[cfg(target_os = "linux")]
+mod linux_panel;
 #[cfg(target_os = "macos")]
 mod macos_trust;
 mod quota;
@@ -19,6 +21,8 @@ struct PopoverState {
     last_blur: Mutex<Option<Instant>>,
     anchor: Mutex<Option<tauri::Rect>>,
     system_dialog: AtomicBool,
+    #[cfg(target_os = "linux")]
+    dragging: AtomicBool,
 }
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, State};
@@ -27,7 +31,7 @@ use tauri::{Emitter, Manager, State};
 fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        window.start_dragging().map_err(|e| e.to_string())
+        linux_panel::start_drag(window)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -377,7 +381,7 @@ mod panel_tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn tray_image(title: &str) -> tauri::image::Image<'static> {
     // Platform trays do not all support text labels. Render numbers into an icon.
     let glyphs = [
@@ -512,13 +516,20 @@ pub fn run() {
                 });
             #[cfg(target_os = "macos")]
             let builder = builder.title("—");
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
             let builder = builder.icon(tray_image("—"));
+            // AppIndicator requires an icon for its native text label. A transparent
+            // pixel avoids a second logo or a box around the percentage.
+            #[cfg(target_os = "linux")]
+            let builder = builder
+                .icon(tauri::image::Image::new_owned(vec![0; 4], 1, 1))
+                .title("—");
             builder.build(app)?;
             let startup = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || startup.state::<Shared>().start_on_launch(&startup));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let mut previous_title = String::new();
                 loop {
                     let status = handle.state::<Shared>().status(&handle);
                     let profile = status
@@ -534,10 +545,13 @@ pub fn run() {
                         "—".into()
                     };
                     if let Some(tray) = handle.tray_by_id("show-my-limits") {
-                        #[cfg(target_os = "macos")]
-                        let _ = tray.set_title(Some(&title));
-                        #[cfg(not(target_os = "macos"))]
-                        let _ = tray.set_icon(Some(tray_image(&title)));
+                        if title != previous_title {
+                            #[cfg(any(target_os = "macos", target_os = "linux"))]
+                            let _ = tray.set_title(Some(&title));
+                            #[cfg(target_os = "windows")]
+                            let _ = tray.set_icon(Some(tray_image(&title)));
+                            previous_title.clone_from(&title);
+                        }
                         let _ = tray.set_tooltip(Some(format!(
                             "Show My Limits · остаток за 5 часов: {title}"
                         )));
@@ -556,6 +570,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Focused(false) = event {
                 if let Some(state) = window.try_state::<PopoverState>() {
+                    #[cfg(target_os = "linux")]
+                    if state.dragging.load(Ordering::SeqCst) {
+                        return;
+                    }
                     // Keep the parent GUI available while its own certificate authorization runs.
                     if !state.system_dialog.load(Ordering::SeqCst) && window.is_visible().unwrap_or(false) {
                         *state.last_blur.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
