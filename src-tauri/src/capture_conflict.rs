@@ -38,7 +38,7 @@ pub fn ensure_exclusive() -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "Уже запущен другой mitmproxy (PID {ids}). Остановите перехват в старом Claude Limits или другом приложении, затем запустите Show My Limits. Одновременный захват отключён."
+                "Уже запущен другой mitmproxy (PID {ids}). Остановите перехват в другом приложении, затем запустите Show My Limits. Одновременный захват отключён."
             ));
         }
     }
@@ -50,7 +50,7 @@ mod tests {
     use super::*;
     #[test]
     fn recognizes_helpers_without_matching_apps_or_the_network_extension() {
-        let sample = " 964 /Applications/Claude Limits.app/Contents/MacOS/ClaudeLimits\n 12017 /opt/homebrew/bin/mitmdump\n 12022 /Library/SystemExtensions/ABC/org.mitmproxy.macos-redirector.network-extension\n 42773 /Applications/Show My Limits.app/Contents/Resources/binaries/mitmdump\n 42 /bin/sh\n";
+        let sample = " 964 /Applications/Example.app/Contents/MacOS/Example\n 12017 /opt/homebrew/bin/mitmdump\n 12022 /Library/SystemExtensions/ABC/org.mitmproxy.macos-redirector.network-extension\n 42773 /Applications/Show My Limits.app/Contents/Resources/binaries/mitmdump\n 42 /bin/sh\n";
         assert_eq!(proxy_pids(sample, Some(42773)), vec![12017]);
         assert_eq!(proxy_pids(sample, None), vec![12017, 42773]);
     }
