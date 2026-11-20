@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
@@ -128,6 +129,7 @@ pub struct Inner {
     pub stop_at: Option<f64>,
     pub started_at: f64,
     pub error: Option<String>,
+    pub capture_issue: Arc<Mutex<Option<String>>>,
 }
 pub struct Shared {
     pub paths: Paths,
@@ -210,6 +212,7 @@ impl Shared {
                 stop_at: None,
                 started_at: 0.0,
                 error: None,
+                capture_issue: Arc::new(Mutex::new(None)),
             }),
         })
     }
@@ -270,10 +273,26 @@ impl Shared {
             .and_then(|child| child.try_wait().ok().flatten());
         if let Some(status) = exited {
             if inner.stop_at.is_none() && !status.success() {
-                inner.error = Some("Перехватчик завершился. Проверьте сертификат и разрешения захвата в разделе «Подключение».".into());
+                inner.error = Some(format!(
+                    "Перехватчик завершился (код {}). Повторите запуск. Если ошибка повторится, проверьте разрешения захвата вашей ОС.",
+                    status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "сигнал".into())
+                ));
             }
             inner.child = None;
             inner.stop_at = None;
+        }
+        if inner.child.is_none() && inner.error.is_some() {
+            let issue = inner
+                .capture_issue
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(issue) = issue {
+                inner.error = Some(issue);
+            }
         }
         let state = fs::metadata(self.paths.proxy.join("state.json"))
             .ok()
@@ -517,11 +536,11 @@ impl Shared {
             .join("mitmproxy-ca-cert.cer")
             .is_file()
         {
-            return Err("Сначала подготовьте сертификат в разделе «Подключение».".into());
+            return Err("Сначала создайте сертификат в мастере первоначальной настройки.".into());
         }
         let helper = self
             .find_helper(app, &inner.settings)
-            .ok_or("Не найден mitmdump. Укажите его в настройках подключения.")?;
+            .ok_or("Не найден mitmdump. Проверьте установку перехватчика.")?;
         let addon = app
             .path()
             .resolve(
@@ -562,13 +581,20 @@ impl Shared {
             )
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        inner.child = Some(
-            command
-                .spawn()
-                .map_err(|e| format!("Не удалось запустить перехватчик: {e}"))?,
-        );
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("Не удалось запустить перехватчик: {e}"))?;
+        let issue = Arc::new(Mutex::new(None));
+        if let Some(stdout) = child.stdout.take() {
+            monitor_capture_output(stdout, issue.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            monitor_capture_output(stderr, issue.clone());
+        }
+        inner.capture_issue = issue;
+        inner.child = Some(child);
         inner.started_at = now();
         inner.stop_at = None;
         inner.error = None;
@@ -740,6 +766,66 @@ fn publish_new_ca(generated: &Path, destination: &Path) -> Result<(), String> {
     fs::rename(generated, destination).map_err(|e| format!("Не удалось сохранить сертификат: {e}"))
 }
 
+fn capture_diagnostic(line: &str) -> Option<&'static str> {
+    let line = line.to_lowercase();
+    if [
+        "failed to elevate privileges",
+        "not running as root",
+        "a terminal is required",
+        "a password is required",
+        "no tty present",
+    ]
+    .iter()
+    .any(|message| line.contains(message))
+    {
+        Some(
+            "Не удалось получить права администратора для перехвата Linux. Установка сертификата не выдаёт эти права. Графический запрос прав сетевого компонента пока не реализован.",
+        )
+    } else if line.contains("address already in use") {
+        Some("Не удалось запустить перехватчик: сетевой адрес уже занят другим процессом.")
+    } else if line.contains("operation not permitted") || line.contains("permission denied") {
+        Some(
+            "ОС запретила запуск сетевого перехвата. Проверьте разрешения; установка сертификата сама по себе их не выдаёт.",
+        )
+    } else {
+        None
+    }
+}
+
+fn monitor_capture_output(
+    mut pipe: impl Read + Send + 'static,
+    issue: Arc<Mutex<Option<String>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 1024];
+        let mut line = Vec::with_capacity(4096);
+        loop {
+            let count = match pipe.read(&mut buffer) {
+                Ok(count) => count,
+                Err(_) => break,
+            };
+            for byte in buffer[..count]
+                .iter()
+                .copied()
+                .chain((count == 0).then_some(b'\n'))
+            {
+                if byte == b'\n' {
+                    if let Some(category) = capture_diagnostic(&String::from_utf8_lossy(&line)) {
+                        *issue.lock().unwrap_or_else(|p| p.into_inner()) = Some(category.into());
+                    }
+                    line.clear();
+                } else if line.len() < 4096 {
+                    line.push(byte);
+                }
+            }
+            if count == 0 {
+                break;
+            }
+        }
+        // Only fixed diagnostic categories survive; never persist raw helper output.
+    })
+}
+
 fn helper_command(path: &Path) -> Command {
     #[allow(unused_mut)]
     let mut command = Command::new(path);
@@ -812,6 +898,20 @@ fn system_proxy_active() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_output_is_classified_without_retaining_raw_logs() {
+        let issue = Arc::new(Mutex::new(None));
+        let data = std::io::Cursor::new(
+            b"GET /private?token=secret\nsudo: a terminal is required\n".to_vec(),
+        );
+        monitor_capture_output(data, issue.clone()).join().unwrap();
+        let result = issue.lock().unwrap().clone().unwrap();
+        assert!(result.contains("права администратора"));
+        assert!(!result.contains("secret"));
+        assert!(!result.contains("Подключение"));
+        assert!(capture_diagnostic("cancelled TLS connection").is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn live_settings_validate_before_stopping_and_restart_only_for_capture_changes() {
@@ -833,6 +933,7 @@ mod tests {
                 stop_at: None,
                 started_at: now(),
                 error: None,
+                capture_issue: Arc::new(Mutex::new(None)),
             }),
             installation: Mutex::new(Installation::default()),
             certificate_installation: Mutex::new(()),

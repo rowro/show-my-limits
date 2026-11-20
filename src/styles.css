@@ -167,3 +167,5 @@ header { padding-bottom: 12px; }
 /* Linux tray protocols may not provide an anchor; move the panel by its brand. */
 :root[data-platform="linux"] .brand { cursor: grab; user-select: none; }
 :root[data-platform="linux"] .brand:active { cursor: grabbing; }
+
+.trust-command { margin: 10px 0; padding: 10px; background: var(--accent-soft); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 9px; line-height: 1.6; user-select: text; }

@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { age, countdown, demoStatus, certificateTrusted, needsSetup, needsClientRestart, isFresh, percentage, remaining, type Profile, type Settings, type Status, type Theme } from "./model";
 import { setMarkupIfChanged } from "./dom";
+import { linuxTrustCommands } from "./certificates";
 import "./styles.css";
 import brandLogo from "./assets/show-my-limits.svg";
 
@@ -183,6 +184,11 @@ function overview() {
     ${item.status === "rejected" ? '<p class="inline-warning">Сервер сообщает о достижении лимита.</p>' : ""}`;
 }
 
+function linuxCertificateHelp(confirm = true) {
+  const ready = state.setup.certificateExists;
+  return `<p>В Ubuntu / Debian выполни в терминале:</p><pre class="trust-command"><code>${esc(linuxTrustCommands(state.setup.certificatePath))}</code></pre><button type="button" class="secondary" data-action="copy-trust-commands" ${!ready ? "disabled" : ""}>Скопировать команды</button><p>После успешного выполнения ${confirm ? "нажми «Я добавил доверие» и " : ""}перезапусти клиент.</p><p class="field-help">В других дистрибутивах добавь этот публичный CA штатным способом. Некоторые клиенты используют отдельное хранилище доверия.</p>`;
+}
+
 function setup() {
   const ready = state.setup.certificateExists;
   const helper = !!state.setup.helperPath;
@@ -192,12 +198,13 @@ function setup() {
   const installing = ["downloading", "verifying", "extracting"].includes(installation.phase);
   const progress = installation.phase === "verifying" ? "Проверяем загрузку…" : installation.phase === "extracting" ? "Устанавливаем…" : installation.total ? `Загружаем ${Math.floor(installation.downloaded / installation.total * 100)}%` : "Загружаем…";
   const name = state.setup.certificateName;
-  const identity = ready ? `<div class="certificate-identity"><p>В списке сертификатов: <strong>${esc(name || "имя не удалось прочитать")}</strong></p><details><summary>Как отличить от других сертификатов</summary><p>Файл: <code>mitmproxy-ca-cert.cer</code></p><p>Если сертификатов с таким именем несколько, сравни SHA-256 в окне сведений:</p><code class="fingerprint">${esc(state.setup.certificateSha256 || "Отпечаток не удалось прочитать")}</code></details></div>` : "";
+  const certificateFile = state.setup.certificatePath.split(/[\\/]/).pop() || "mitmproxy-ca-cert.cer";
+  const identity = ready ? `<div class="certificate-identity"><p>Имя сертификата в хранилище: <strong>${esc(name || "имя не удалось прочитать")}</strong></p><details><summary>Файл и отпечаток SHA-256</summary><p>Файл экспорта: <code>${esc(certificateFile)}</code>. Его имя отличается от имени сертификата.</p><p>Если сертификатов с таким именем несколько, сравни SHA-256 в окне сведений:</p><code class="fingerprint">${esc(state.setup.certificateSha256 || "Отпечаток не удалось прочитать")}</code></details></div>` : "";
   const trust = state.setup.platform === "macos"
     ? `<ol class="trust-steps"><li>Нажми «Импортировать сертификат» ниже. В окне добавления выбери связку <strong>«Система»</strong> → «Добавить». macOS может запросить пароль.</li><li>В «Связке ключей» выбери слева <strong>«Система»</strong>, сверху — <strong>«Сертификаты»</strong>. Если слева нет списка связок: «Вид» → «Показать связки ключей».</li><li>В поиске введи <strong>${esc(name || "limits-mitmproxy")}</strong>. Ищи во вкладке «Сертификаты», а не «Пароли» или «Мои сертификаты».</li><li>Открой найденный сертификат двойным щелчком → «Доверие» → «При использовании этого сертификата» → <strong>«Всегда доверять»</strong>. Закрой окно и подтверди изменение.</li><li>Полностью перезапусти Claude, затем нажми «Я добавил доверие».</li></ol><p class="field-help">Не появился диалог импорта? В «Связке ключей» выбери «Файл» → «Импортировать объекты…» и укажи файл из кнопки «Показать файл».</p>`
     : state.setup.platform === "windows"
       ? "В мастере импорта выбери «Текущий пользователь» → «Доверенные корневые центры сертификации». Затем перезапусти клиент."
-      : "Добавь сертификат в доверенные CA своего дистрибутива. У некоторых клиентов и браузеров отдельное хранилище доверия.";
+      : linuxCertificateHelp();
   const steps = [
     `<section class="setup-step"><span class="step-number ${helper ? "done" : ""}">${helper ? icon("check") : "1"}</span><div><h3>Перехватчик <span class="pill ${helper ? "good" : ""}">${helper ? "Установлен" : "Нужен mitmproxy"}</span></h3>
       ${helper ? `<p>Найдена установленная версия. Повторная установка не нужна.</p><details class="helper-location"><summary>Где установлен</summary><p class="helper-path">${esc(state.setup.helperPath)}</p></details>` : `<p>Установим официальный mitmproxy в каталог приложения.</p><button class="secondary" data-action="install-helper" ${busy || installing || !state.setup.installSupported ? "disabled" : ""}>${installing ? progress : "Установить mitmproxy"}</button>${!state.setup.installSupported ? '<p class="field-help">Для этой архитектуры укажи свою установку в настройках.</p>' : ""}<details><summary>Уже установлен? Указать путь</summary><form id="helper-form"><input name="helperPath" aria-label="Путь к mitmdump" placeholder="Путь к mitmdump"/><button class="secondary setup-link" type="submit">Использовать</button></form></details>`}
@@ -206,7 +213,7 @@ function setup() {
     `<section class="setup-step"><span class="step-number ${trusted ? "done" : ""}">${trusted ? icon("check") : "3"}</span><div><h3>Доверие сертификату <span class="pill ${trusted ? "good" : ""}">${trusted ? "Готово" : "Нужна установка"}</span></h3>
     ${state.setup.platform === "macos" ? `<p>${trusted ? "Доверие настроено. После включения перехватчика полностью выйди из Claude через ⌘Q и открой его заново." : "Добавим сертификат в связку «Система» и настроим доверие для HTTPS. macOS может запросить два подтверждения: для импорта и для доверия. Пароль вводится в системных окнах."}</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${busy && pendingAction === "install-certificate" ? "Ожидаем разрешения…" : trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
     ${identity}
-    ${state.setup.platform === "macos" ? `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="text-button setup-link" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}</details>` : `<div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="text-button setup-link" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}`}
+    ${state.setup.platform === "macos" ? `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}</details>` : `<div class="trust-guide">${trust}</div>${state.setup.platform === "windows" ? `<button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}Открыть сертификат</button>` : ""}<button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}`}
     <p class="subtle">Получение нового ответа Claude подтвердит, что клиент доверяет сертификату.</p></div></section>`,
     `<section class="setup-step"><span class="step-number ${configured ? "done" : ""}">${configured ? icon("check") : "4"}</span><div><h3>Сервер и процессы <span class="pill ${configured ? "good" : ""}">${configured ? "Выбраны" : "Не выбраны"}</span></h3><form id="setup-form">${connectionFields({ ...state.settings, ...(setupDraft || {}) })}</form></div></section>`
   ];
@@ -225,6 +232,7 @@ function settings() {
     <fieldset><legend>Оформление</legend><div class="theme-switch" role="group" aria-label="Тема">${([['system','Система'],['light','Светлая'],['dark','Тёмная']] as const).map(([value, label]) => `<button type="button" data-theme="${value}" class="${s.theme === value ? "selected" : ""}" aria-label="${label}" title="${label}" aria-pressed="${s.theme === value}">${icon(value)}</button>`).join("")}</div></fieldset>
     <fieldset><legend>Запуск</legend><label class="client-option"><input type="checkbox" id="launch-at-login" ${state.setup.launchAtLogin ? "checked" : ""} ${state.setup.launchAtLogin == null ? "disabled" : ""}/><span><strong>Запускать вместе с ОС</strong><small>В фоне, со значком в трее.</small></span></label><p class="field-help">${state.setup.launchAtLogin == null ? "Не удалось прочитать настройку автозапуска." : state.setup.platform === "macos" ? "Для автозапуска держи приложение в «Программах»." : "Настройка применяется сразу."}</p></fieldset>
     <section id="updates-section"></section>
+    <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p><details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Система» открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="open-certificate">Открыть сертификат</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
     ${connectionFields({ ...s, ...(settingsDraft || {}) })}
     <p class="field-help">Если изменить сервер или процессы, захват перезапустится при сохранении.</p></form>`;
 }
@@ -271,6 +279,17 @@ async function finishSetup() {
 }
 
 async function action(name: string) {
+  if (name === "copy-trust-commands") {
+    try {
+      await navigator.clipboard.writeText(linuxTrustCommands(state.setup.certificatePath));
+      const button = document.querySelector('[data-action="copy-trust-commands"]');
+      if (button) button.textContent = "Скопировано";
+    } catch {
+      toast = "Не удалось скопировать. Выдели команды и скопируй их вручную.";
+      renderFooter();
+    }
+    return;
+  }
   if (["check-update", "install-update", "open-releases"].includes(name)) {
     if (!native) { updateState.phase=name === "check-update" ? "current" : "idle"; renderUpdates(); return; }
     try {
@@ -403,6 +422,9 @@ function setDevScene(scene: string) {
   if (!devScenes.some(([id]) => id === scene)) scene = "limits";
   const theme = state.settings.theme;
   state = demoStatus(); state.settings.theme = theme;
+  const platform = new URLSearchParams(location.search).get("platform");
+  if (["linux", "windows", "macos"].includes(platform || "")) state.setup.platform = platform!;
+  if (state.setup.platform === "linux") state.setup.certificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates/mitmproxy-ca-cert.cer";
   setupDraft = null; settingsDraft = null; toast = null; busy = false; pendingAction = "";
   view = scene === "settings" ? "settings" : "overview";
   if (scene === "trust-lost") state.setup.certificateTrusted = false;
