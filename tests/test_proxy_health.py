@@ -24,6 +24,13 @@ class HealthRecoveryTests(unittest.TestCase):
         self.assertEqual(self.addon.health["kind"], "response_received")
         self.assertEqual(self.addon.profiles, {})
 
+    def test_ipv6_route_failure_is_not_a_certificate_error(self):
+        server = SimpleNamespace(sni="gateway.example", error="[Errno 101] Network is unreachable", address=("2001:db8::1", 443))
+        self.addon.server_connect_error(SimpleNamespace(context=SimpleNamespace(server=server, client=SimpleNamespace(sni="gateway.example"))))
+        self.assertEqual(self.addon.health["kind"], "network_ipv6")
+        self.addon.responseheaders(self.response())
+        self.assertEqual(self.addon.health["kind"], "response_received")
+
     def test_other_host_does_not_clear_failed_host(self):
         self.addon.responseheaders(self.response("other.example"))
         self.assertEqual(self.addon.health["kind"], "certificate_client")

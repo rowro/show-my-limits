@@ -88,7 +88,7 @@ func TestRealTLSHeaderRoundTrip(t *testing.T) {
 	if !strings.Contains(out.String(), "1.00") {
 		t.Fatal(out.String())
 	}
-	untrusted, err := newClient("")
+	untrusted, err := newClient("", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,12 +112,28 @@ func TestRejectsMissingEchoAndRedirects(t *testing.T) {
 	if err := send(context.Background(), trusted, server.URL, want, io.Discard); err == nil {
 		t.Fatal("missing echo accepted")
 	}
-	client, _ := newClient("")
+	client, _ := newClient("", false)
 	trusted.CheckRedirect = client.CheckRedirect
 	if err := send(context.Background(), trusted, server.URL+"/redirect", nil, io.Discard); err == nil {
 		t.Fatal("redirect accepted")
 	}
-	if _, err := newClient("nonexistent-certificate.pem"); err == nil {
+	if _, err := newClient("nonexistent-certificate.pem", false); err == nil {
 		t.Fatal("missing CA silently ignored")
+	}
+}
+
+func TestIPv4ModeDoesNotDialIPv6(t *testing.T) {
+	client, err := newClient("", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	transport := client.Transport.(*http.Transport)
+	conn, err := transport.DialContext(context.Background(), "tcp", "[::1]:443")
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("IPv4-only mode dialed an IPv6 address")
 	}
 }

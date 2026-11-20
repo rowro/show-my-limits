@@ -12,7 +12,7 @@ const devTools = !native && import.meta.env.DEV;
 const demo = !native && new URLSearchParams(location.search).has("demo");
 const root = document.querySelector<HTMLDivElement>("#app")!;
 let view: "overview" | "setup" | "settings" = "setup";
-let appVersion = "0.1.1";
+let appVersion = "0.1.2";
 type UpdateStatus = { phase: string; version: string | null; downloaded: number; total: number | null; error: string | null; manualInstall: boolean };
 let updateState: UpdateStatus = { phase: "idle", version: null, downloaded: 0, total: null, error: null, manualInstall: false };
 let firstStatus = true;
@@ -255,7 +255,7 @@ function renderFooter() {
   renderUpdates();
   const phase = state.capture.phase;
   const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Сбой TLS-соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
-  setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || ["starting", "stopping"].includes(phase) ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
+  setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
   const wizardNav = view === "setup" ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy || setupStep === 0 ? "disabled" : ""}>Назад</button>${setupStep === 3 ? `<button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Подключаем…" : "Подключить"}</button>` : `<button class="primary" data-action="setup-next" ${busy || !setupStepReady() ? "disabled" : ""}>Далее${icon("arrow")}</button>`}</div>` : "";
   setMarkupIfChanged(document.querySelector("#screen-actions")!, `${wizardNav}${view === "settings" ? `<button class="primary screen-save" type="submit" form="settings-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Сохранить"}</button>` : ""}`);
   setMarkupIfChanged(document.querySelector("#footer")!, `<div class="footer-bottom"><span class="version">${esc(appVersion)}</span><button class="text-button" data-action="quit">Выйти</button></div>`);

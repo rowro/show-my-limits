@@ -1,13 +1,13 @@
-Show My Limits 0.1.1 — test release.
+Show My Limits 0.1.2 — test release.
 
-- Linux: move the panel by dragging its logo/title; keep the chosen position on resize.
-- Linux: sudo can request network-component authentication through a zenity dialog. The GUI remains unprivileged; sudoers is unchanged.
-- Ubuntu/Debian: copy certificate trust commands from the setup wizard or Settings. Trust confirmation is now a visible button.
-- Distinguish the certificate's display name from its exported filename.
-- Explain DNS, TLS, timeout and capture-permission errors without retaining raw traffic logs.
-- Use platform-neutral helper-installation text.
-- macOS arm64/Intel, Windows x64 and Linux x64/arm64 installers and signed updater packages.
+- Match capture readiness by launch ID rather than launcher/worker PID; supports standalone mitmdump's child process.
+- Allow cancellation while capture is starting; stop startup after 90 seconds without readiness.
+- Cancel the owned Linux process group, including pending user-level authentication.
+- Distinguish unavailable network routes from TLS certificate errors.
+- Mock client v2 adds --ipv4 for a controlled IPv4-only TCP test while retaining TLS validation.
 
-Linux graphical authentication still needs validation on the target Ubuntu VM. DEB recommends zenity; AppImage users may need to install it separately. Linux requires a supported kernel and appropriate capture privileges. A successful build does not prove capture works on a clean machine.
+Includes 0.1.1's Linux dragging, sudo/zenity password prompt, platform-neutral setup text and certificate trust instructions in Setup and Settings.
 
-macOS builds remain ad-hoc signed without Apple notarization; Windows builds do not have Authenticode signing. Linux in-app updates use AppImage; DEB updates are installed manually.
+The Ubuntu VM's direct HTTPS test passed; full captured requests and graphical startup remain under validation. Windows capture still needs an end-to-end test. Builds and tests do not establish clean-machine runtime support.
+
+macOS remains ad-hoc signed without Apple notarization. Windows has no Authenticode signature. Linux AppImage supports in-app updates; DEB packages are installed manually.

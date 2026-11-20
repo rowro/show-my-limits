@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -85,7 +86,7 @@ func requestURL(endpoint string, headers http.Header) (string, error) {
 	return u.String(), nil
 }
 
-func newClient(caFile string) (*http.Client, error) {
+func newClient(caFile string, ipv4Only bool) (*http.Client, error) {
 	config := &tls.Config{MinVersion: tls.VersionTLS12}
 	if caFile != "" {
 		roots, err := x509.SystemCertPool()
@@ -101,10 +102,17 @@ func newClient(caFile string) (*http.Client, error) {
 		}
 		config.RootCAs = roots
 	}
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	dial := dialer.DialContext
+	if ipv4Only {
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp4", address)
+		}
+	}
 	return &http.Client{
 		// Use the real OS trust store and direct TCP/TLS. Environment proxy settings
 		// would bypass the process-capture path this tool is supposed to exercise.
-		Transport: &http.Transport{TLSClientConfig: config, DisableKeepAlives: true, ForceAttemptHTTP2: false},
+		Transport: &http.Transport{DialContext: dial, TLSClientConfig: config, DisableKeepAlives: true, ForceAttemptHTTP2: false},
 		Timeout:   20 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("unexpected redirect from test server")
@@ -155,6 +163,7 @@ func send(ctx context.Context, client *http.Client, target string, expected http
 }
 
 func run() error {
+	ipv4Only := flag.Bool("ipv4", false, "use IPv4 TCP only for diagnosing IPv6 routing problems")
 	name := flag.String("scenario", "normal", "normal, low, blocked, weekly-blocked, progress, missing")
 	count := flag.Int("count", 0, "requests to send; 0 repeats until Ctrl+C")
 	interval := flag.Duration("interval", 5*time.Second, "delay between requests (at least 1s)")
@@ -174,13 +183,16 @@ func run() error {
 		return err
 	}
 	u, _ := url.Parse(target)
-	fmt.Printf("Show My Limits — synthetic Claude client (PID %d)\n", os.Getpid())
+	fmt.Printf("Show My Limits — synthetic Claude client v2 (PID %d)\n", os.Getpid())
 	fmt.Printf("Server in Show My Limits: %s\nScenario: %s | Ctrl+C to stop\n", u.Hostname(), *name)
 	fmt.Println("No Claude account, messages or tokens are used. Only synthetic quota values are sent.")
 	if *caFile != "" {
 		fmt.Println("Extra CA supplied: this run does not prove that OS trust was configured correctly.")
 	}
-	client, err := newClient(*caFile)
+	if *ipv4Only {
+		fmt.Println("IPv4-only TCP enabled (diagnostic); TLS verification remains enabled.")
+	}
+	client, err := newClient(*caFile, *ipv4Only)
 	if err != nil {
 		return err
 	}

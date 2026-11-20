@@ -26,6 +26,14 @@ class AddonTests(unittest.TestCase):
         self.environment.stop()
         self.temporary.cleanup()
 
+    def test_state_carries_launch_identity(self):
+        with patch.dict(os.environ, {"SML_RUN_ID": "launch-123"}):
+            addon = module.ShowMyLimitsAddon()
+        addon.write()
+        data = json.loads((Path(self.temporary.name) / "state.json").read_text())
+        self.assertEqual(data["runId"], "launch-123")
+        self.assertEqual(data["pid"], os.getpid())
+
     def flow(self, path="/any/provider/prefix/messages?beta=false", org="org-private"):
         return NS(request=NS(host="192.0.2.1", path=path, stream=False),
                   server_conn=NS(sni="gateway.example"),

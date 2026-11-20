@@ -1,6 +1,7 @@
 """Show My Limits's mitmproxy addon. Saves quota metadata only; never logs traffic bodies or credentials."""
 import asyncio
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -43,6 +44,7 @@ class ShowMyLimitsAddon:
     def __init__(self):
         self.directory = Path(os.environ.get("SML_STATE_DIR", str(Path.home() / ".local/share/show-my-limits/proxy")))
         self.hosts = {host_name(h) for h in json.loads(os.environ.get("SML_HOSTS", "[]"))}
+        self.run_id = os.environ.get("SML_RUN_ID")
         self.profiles = {}
         self.health = None
         self.started_at = time.time()
@@ -50,7 +52,7 @@ class ShowMyLimitsAddon:
 
     def write(self, running=True):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        data = {"version": 1, "pid": os.getpid(), "running": running,
+        data = {"version": 1, "runId": self.run_id, "pid": os.getpid(), "running": running,
                 "updatedAt": time.time(), "startedAt": self.started_at,
                 "profiles": list(self.profiles.values()), "health": self.health}
         descriptor, name = tempfile.mkstemp(prefix=".show-my-limits-", dir=str(self.directory))
@@ -102,7 +104,7 @@ class ShowMyLimitsAddon:
             # endpoint carries no quota headers. Do not leave an older TLS
             # failure on screen while the client is successfully communicating.
             if self.health and self.health.get("host") == host and self.health.get("kind") in {
-                "certificate_client", "certificate_server", "tls_client", "tls_server"
+                "certificate_client", "certificate_server", "tls_client", "tls_server", "network_ipv6", "network_unreachable"
             }:
                 self.health = {"kind": "response_received", "host": host, "observedAt": time.time()}
                 self.publish()
@@ -115,6 +117,27 @@ class ShowMyLimitsAddon:
             oldest = min(self.profiles, key=lambda key: self.profiles[key]["observedAt"])
             del self.profiles[oldest]
         self.health = {"kind": "quota_received", "host": host, "observedAt": time.time()}
+        self.publish()
+
+    def server_connect_error(self, data):
+        context = data.context
+        server = context.server
+        error = str(getattr(server, "error", "") or "").lower()
+        if not any(message in error for message in ("network is unreachable", "no route to host")):
+            return
+        candidates = [host_name(getattr(server, "sni", None)),
+                      host_name(getattr(context.client, "sni", None))]
+        host = next((name for name in candidates if name in self.hosts), None)
+        if host is None:
+            return
+        kind = "network_unreachable"
+        address = getattr(server, "address", None)
+        try:
+            if address and ipaddress.ip_address(address[0]).version == 6:
+                kind = "network_ipv6"
+        except ValueError:
+            pass
+        self.health = {"kind": kind, "host": host, "observedAt": time.time()}
         self.publish()
 
     def tls_failure(self, data, side):

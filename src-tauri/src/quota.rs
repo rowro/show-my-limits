@@ -54,6 +54,8 @@ pub struct Health {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyState {
+    #[serde(default)]
+    pub run_id: Option<String>,
     pub pid: u32,
     pub running: bool,
     pub updated_at: f64,

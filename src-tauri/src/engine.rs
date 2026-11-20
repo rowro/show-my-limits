@@ -130,6 +130,7 @@ pub struct Inner {
     pub started_at: f64,
     pub error: Option<String>,
     pub capture_issue: Arc<Mutex<Option<String>>>,
+    pub run_id: Option<String>,
 }
 pub struct Shared {
     pub paths: Paths,
@@ -213,6 +214,7 @@ impl Shared {
                 started_at: 0.0,
                 error: None,
                 capture_issue: Arc::new(Mutex::new(None)),
+                run_id: None,
             }),
         })
     }
@@ -301,11 +303,24 @@ impl Shared {
             .and_then(|data| serde_json::from_slice::<ProxyState>(&data).ok())
             .unwrap_or_default();
         let pid = inner.child.as_ref().map(|child| child.id());
-        let active = pid == Some(state.pid)
-            && state.running
-            && timestamp - state.updated_at < 20.0
-            && timestamp >= state.updated_at - 5.0
-            && state.started_at >= inner.started_at - 1.0;
+        let active = current_capture_state(
+            &state,
+            inner.run_id.as_deref(),
+            pid.is_some(),
+            inner.started_at,
+            timestamp,
+        );
+        if pid.is_some()
+            && !active
+            && inner.stop_at.is_none()
+            && timestamp - inner.started_at > 90.0
+        {
+            if let Some(child) = inner.child.as_mut() {
+                signal_stop(child);
+            }
+            inner.stop_at = Some(timestamp);
+            inner.error = Some("Перехватчик не подтвердил готовность за 90 секунд. Запуск отменён. Проверьте запрос прав и повторите попытку.".into());
+        }
         let profiles: Vec<_> = state
             .profiles
             .into_iter()
@@ -316,6 +331,8 @@ impl Shared {
             .and_then(|health| match health.kind.as_str() {
                 "certificate_client" => Some(format!("Одно из соединений клиента отклонило сертификат прокси для {}. Если ответы Claude не приходят, полностью перезапустите клиент.", health.host)),
                 "certificate_server" => Some(format!("Не удалось проверить сертификат сервера {} в одном из соединений.", health.host)),
+                "network_ipv6" => Some(format!("Не удалось соединиться с {} по IPv6: маршрут недоступен. Проверьте IPv6 в этой системе или выполните диагностический запрос по IPv4.", health.host)),
+                "network_unreachable" => Some(format!("Сетевой маршрут к {} недоступен. Проверьте подключение и маршрутизацию.", health.host)),
                 "tls_client" | "tls_server" => Some(format!("Не завершено TLS-соединение с {}. Ошибка доверия к сертификату не подтверждена.", health.host)),
                 _ => None,
             });
@@ -558,7 +575,23 @@ impl Shared {
             .map(|h| format!("{}(?::[0-9]+)?", regex::escape(h)))
             .collect::<Vec<_>>()
             .join("|");
+        // One-file distributions spawn a Python worker with a different PID.
+        // Correlate state by launch ID, while the owned launcher must remain alive.
+        let run_id = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let mut command = helper_command(&helper);
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command.env("SML_RUN_ID", &run_id);
         #[cfg(target_os = "linux")]
         {
             let askpass = app
@@ -616,6 +649,7 @@ impl Shared {
             monitor_capture_output(stderr, issue.clone());
         }
         inner.capture_issue = issue;
+        inner.run_id = Some(run_id);
         inner.child = Some(child);
         inner.started_at = now();
         inner.stop_at = None;
@@ -788,8 +822,35 @@ fn publish_new_ca(generated: &Path, destination: &Path) -> Result<(), String> {
     fs::rename(generated, destination).map_err(|e| format!("Не удалось сохранить сертификат: {e}"))
 }
 
+fn current_capture_state(
+    state: &ProxyState,
+    run_id: Option<&str>,
+    launcher_alive: bool,
+    started_at: f64,
+    timestamp: f64,
+) -> bool {
+    launcher_alive
+        && state.pid > 0
+        && run_id.is_some()
+        && state.run_id.as_deref() == run_id
+        && state.running
+        && timestamp - state.updated_at < 20.0
+        && timestamp >= state.updated_at - 5.0
+        && state.started_at >= started_at - 1.0
+}
+
 fn capture_diagnostic(line: &str) -> Option<&'static str> {
     let line = line.to_lowercase();
+    if line.contains("sml_error:state_write") {
+        return Some(
+            "Перехватчик не может записать состояние в каталог приложения. Проверьте владельца и права каталога данных Show My Limits.",
+        );
+    }
+    if line.contains("error in script") || line.contains("no module named") {
+        return Some(
+            "Не удалось загрузить обработчик лимитов. Переустановите Show My Limits и повторите запуск.",
+        );
+    }
     if line.contains("sml_error:askpass_missing") {
         return Some(
             "Не найден zenity для графического запроса прав. Установите его: sudo apt install zenity.",
@@ -865,7 +926,14 @@ fn helper_command(path: &Path) -> Command {
 }
 
 fn signal_stop(child: &mut Child) {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    unsafe {
+        // Cancel the owned launcher, Python worker and pending user-level askpass.
+        if libc::kill(-(child.id() as i32), libc::SIGTERM) != 0 {
+            libc::kill(child.id() as i32, libc::SIGTERM);
+        }
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
@@ -926,6 +994,48 @@ fn system_proxy_active() -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn worker_pid_may_differ_but_launch_identity_must_match() {
+        let mut state = ProxyState {
+            pid: 9999,
+            run_id: Some("current".into()),
+            running: true,
+            updated_at: 105.0,
+            started_at: 100.0,
+            ..Default::default()
+        };
+        assert!(current_capture_state(
+            &state,
+            Some("current"),
+            true,
+            100.0,
+            106.0
+        ));
+        assert!(!current_capture_state(
+            &state,
+            Some("old"),
+            true,
+            100.0,
+            106.0
+        ));
+        assert!(!current_capture_state(
+            &state,
+            Some("current"),
+            false,
+            100.0,
+            106.0
+        ));
+        assert!(!current_capture_state(
+            &state,
+            Some("current"),
+            true,
+            100.0,
+            130.0
+        ));
+        state.run_id = None;
+        assert!(!current_capture_state(&state, None, true, 100.0, 106.0));
+    }
+
+    #[test]
     fn capture_output_is_classified_without_retaining_raw_logs() {
         let issue = Arc::new(Mutex::new(None));
         let data = std::io::Cursor::new(
@@ -961,6 +1071,7 @@ mod tests {
                 started_at: now(),
                 error: None,
                 capture_issue: Arc::new(Mutex::new(None)),
+                run_id: None,
             }),
             installation: Mutex::new(Installation::default()),
             certificate_installation: Mutex::new(()),
