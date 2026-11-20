@@ -18,7 +18,7 @@
 | macOS Apple Silicon | `darwin-aarch64.dmg` |
 | macOS Intel | `darwin-x86_64.dmg` |
 | Windows x64 | `windows-x86_64-setup.exe` |
-| Linux x64 | `.AppImage` или `.deb` |
+| Linux x64/ARM64 | `.AppImage` или `.deb` |
 
 На macOS переместите приложение в «Программы». Текущие сборки без подписи Apple Developer ID и нотариализации: при первом запуске может потребоваться разрешение в «Системные настройки → Конфиденциальность и безопасность».
 

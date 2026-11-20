@@ -38,6 +38,8 @@ npm run build
 npm run check:release
 ```
 
+Browser regression check: open `/tests/click-regression.html` on the dev server and hold Save during background refresh; one release must produce exactly one submission and preserve the pressed DOM node. Background status rendering must not replace unchanged controls or resize the panel during a pointer interaction.
+
 Run checks appropriate to the change; documentation-only edits do not need a native rebuild. Compile and test on the target OS. Successful CI builds do not prove CA trust, capture privileges, clean installation or end-to-end updates.
 
 ## Data and compatibility
@@ -54,7 +56,7 @@ The undecorated panel opens from the tray and hides on blur; no draggable window
 
 ## Distribution
 
-See `docs/RELEASING.md` for signing keys, workflow and publishing. The release workflow builds macOS arm64/Intel, Windows x64 and Linux x64 into a draft release, then assembles the complete updater manifest. Do not publish a draft without completing the agreed release review.
+See `docs/RELEASING.md` for signing keys, workflow and publishing. The release workflow builds macOS arm64/Intel, Windows x64 and Linux x64/ARM64 into a draft release, then assembles the complete updater manifest. Do not publish a draft without completing the agreed release review.
 
 Updater signatures are separate from OS application signing and the interception CA. Current macOS builds are ad-hoc signed without Apple notarization. Linux AppImage supports in-app updates; DEB users install a new package manually. Verify downloaded update signatures before stopping capture or installing anything.
 

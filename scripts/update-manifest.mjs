@@ -5,7 +5,7 @@ export async function makeManifest(assets, signaturesDir, version, repository, t
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Stable semver required');
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error('Invalid repository');
   const platforms = {};
-  for (const [key, extension] of Object.entries({'darwin-aarch64':'.app.tar.gz','darwin-x86_64':'.app.tar.gz','windows-x86_64':'.exe','linux-x86_64':'.AppImage'})) {
+  for (const [key, extension] of Object.entries({'darwin-aarch64':'.app.tar.gz','darwin-x86_64':'.app.tar.gz','windows-x86_64':'.exe','linux-x86_64':'.AppImage','linux-aarch64':'.AppImage'})) {
     const matches=assets.filter(asset=>asset.name.includes(`_${key}`) && asset.name.endsWith(extension));
     if (matches.length !== 1) throw new Error(`Expected one updater asset for ${key}; got ${matches.length}`);
     const asset=matches[0];

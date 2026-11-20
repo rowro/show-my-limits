@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { age, countdown, demoStatus, certificateTrusted, needsSetup, needsClientRestart, isFresh, percentage, remaining, type Profile, type Settings, type Status, type Theme } from "./model";
+import { setMarkupIfChanged } from "./dom";
 import "./styles.css";
 import brandLogo from "./assets/show-my-limits.svg";
 
@@ -20,6 +21,13 @@ let settingsDraft: { hosts: string[]; additionalProcesses: string[] } | null = n
 let busy = false;
 let pendingAction = "";
 let toast: string | null = null;
+let pointerActive = false;
+const deferredRenders = new Set<() => void>();
+function deferDuringPointer(render: () => void): boolean {
+  if (!pointerActive) return false;
+  deferredRenders.add(render);
+  return true;
+}
 let renderedView = "";
 let renderedMarkup = "";
 let state: Status = { settings: { theme: "system", hosts: [], clients: ["desktop", "terminal"], additionalProcesses: [], selectedProfile: null, helperPath: "", certificateTrustConfirmed: false },
@@ -82,6 +90,7 @@ function shell() {
 }
 
 function render() {
+  if (deferDuringPointer(render)) return;
   if (needsSetup(state)) {
     const required = !state.setup.helperPath ? 0 : !state.setup.certificateExists ? 1 : !certificateTrusted(state) ? 2 : 3;
     if (view !== "setup" || setupStep > required) setupStep = required;
@@ -110,7 +119,7 @@ function schedulePanelSize() {
 }
 async function fitPanel() {
   const active = document.activeElement;
-  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || measuring) return;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || pointerActive || measuring) return;
   const shell = document.querySelector<HTMLElement>(".app-shell");
   const inner = document.querySelector<HTMLElement>("#content-inner");
   if (!shell || !inner) return;
@@ -225,23 +234,25 @@ function setupStepReady() {
 }
 
 function renderUpdates() {
+  if (deferDuringPointer(renderUpdates)) return;
   const section=document.querySelector("#updates-section"); if (!section) return;
   const phase=updateState.phase;
   const working=["checking", "downloading", "installing"].includes(phase);
   const text=phase === "checking" ? "Проверяем…" : phase === "downloading" ? `Загружаем${updateState.total ? ` ${Math.floor(updateState.downloaded / updateState.total * 100)}%` : "…"}` : phase === "installing" ? "Устанавливаем…" : phase === "available" ? `Доступна версия ${updateState.version}` : phase === "current" ? "Установлена актуальная версия" : phase === "unpublished" ? "Обновления пока не опубликованы" : phase === "error" ? updateState.error : "Новые версии из GitHub Releases";
-  section.innerHTML=`<fieldset><legend>Обновления</legend><p class="field-help">${esc(text)}</p>${phase === "available" ? `<button type="button" class="secondary update-button" data-action="${updateState.manualInstall ? "open-releases" : "install-update"}">${updateState.manualInstall ? "Скачать пакет" : "Установить и перезапустить"}</button>` : `<button type="button" class="secondary update-button" data-action="check-update" ${working ? "disabled" : ""}>Проверить обновления</button>`}</fieldset>`;
+  setMarkupIfChanged(section, `<fieldset><legend>Обновления</legend><p class="field-help">${esc(text)}</p>${phase === "available" ? `<button type="button" class="secondary update-button" data-action="${updateState.manualInstall ? "open-releases" : "install-update"}">${updateState.manualInstall ? "Скачать пакет" : "Установить и перезапустить"}</button>` : `<button type="button" class="secondary update-button" data-action="check-update" ${working ? "disabled" : ""}>Проверить обновления</button>`}</fieldset>`);
 }
 function renderFooter() {
+  if (deferDuringPointer(renderFooter)) return;
   renderUpdates();
   const phase = state.capture.phase;
   const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Сбой TLS-соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
-  document.querySelector("#header-status")!.innerHTML = `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || ["starting", "stopping"].includes(phase) ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`;
+  setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || ["starting", "stopping"].includes(phase) ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
   const wizardNav = view === "setup" ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy || setupStep === 0 ? "disabled" : ""}>Назад</button>${setupStep === 3 ? `<button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Подключаем…" : "Подключить"}</button>` : `<button class="primary" data-action="setup-next" ${busy || !setupStepReady() ? "disabled" : ""}>Далее${icon("arrow")}</button>`}</div>` : "";
-  document.querySelector("#screen-actions")!.innerHTML = `${wizardNav}${view === "settings" ? `<button class="primary screen-save" type="submit" form="settings-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Сохранить"}</button>` : ""}`;
-  document.querySelector("#footer")!.innerHTML = `<div class="footer-bottom"><span class="version">${esc(appVersion)}</span><button class="text-button" data-action="quit">Выйти</button></div>`;
+  setMarkupIfChanged(document.querySelector("#screen-actions")!, `${wizardNav}${view === "settings" ? `<button class="primary screen-save" type="submit" form="settings-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Сохранить"}</button>` : ""}`);
+  setMarkupIfChanged(document.querySelector("#footer")!, `<div class="footer-bottom"><span class="version">${esc(appVersion)}</span><button class="text-button" data-action="quit">Выйти</button></div>`);
   const message = toast || state.setup.certificateTrustError || state.setup.installation.error || state.capture.error || state.connectionIssue;
   const notice = document.querySelector("#notice")!;
-  notice.innerHTML = message ? `<div class="notice">${icon("warning")}<span>${esc(message)}</span><button class="icon-button" data-action="dismiss" aria-label="Закрыть сообщение">${icon("close")}</button></div>` : "";
+  setMarkupIfChanged(notice, message ? `<div class="notice">${icon("warning")}<span>${esc(message)}</span><button class="icon-button" data-action="dismiss" aria-label="Закрыть сообщение">${icon("close")}</button></div>` : "");
 }
 
 async function refresh() {
@@ -431,6 +442,21 @@ mountDevTools();
 const panelObserver = new ResizeObserver(schedulePanelSize);
 ["#content-inner", "header", "#screen-actions", "#notice", "#footer"].forEach(selector => panelObserver.observe(document.querySelector(selector)!));
 root.addEventListener("toggle", schedulePanelSize, true);
+// Do not replace a pressed button or move it while input blur changes layout.
+root.addEventListener("pointerdown", () => { pointerActive = true; }, true);
+function finishPointerInteraction() {
+  if (!pointerActive) return;
+  pointerActive = false;
+  requestAnimationFrame(() => {
+    const pending = [...deferredRenders];
+    deferredRenders.clear();
+    pending.forEach(render => render());
+    schedulePanelSize();
+  });
+}
+window.addEventListener("pointerup", finishPointerInteraction);
+window.addEventListener("pointercancel", finishPointerInteraction);
+window.addEventListener("blur", finishPointerInteraction);
 root.addEventListener("focusout", schedulePanelSize);
 window.addEventListener("focus", () => { lastDesiredHeight = 0; schedulePanelSize(); });
 window.addEventListener("resize", () => { if (!native) { lastDesiredHeight = 0; schedulePanelSize(); } });

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Button click regression</title>
+<style>body{font:18px system-ui;padding:40px}input,button{font:inherit;padding:14px;margin:12px}#result{padding:12px}</style>
+<h1>Repeated status updates must preserve clicks</h1>
+<p>Background refresh runs every 25ms. Hold Save, then release: exactly one submission should be recorded.</p>
+<form id="settings"><label>Server <input name="host" value="httpbingo.org"></label></form>
+<div id="actions"></div><p id="result">Submissions: 0</p><p id="identity">Pressed button: not yet tested</p>
+<script type="module">
+import {setMarkupIfChanged} from '/src/dom.ts';
+const actions=document.querySelector('#actions');
+let pressed=null,submissions=0;
+const markup='<button type="submit" form="settings">Save</button>';
+setMarkupIfChanged(actions,markup);
+setInterval(()=>setMarkupIfChanged(actions,markup),25);
+actions.addEventListener('pointerdown',event=>{pressed=event.target;});
+actions.addEventListener('pointerup',event=>{document.querySelector('#identity').textContent='Pressed button preserved: '+(pressed===event.target && pressed.isConnected);});
+document.querySelector('#settings').addEventListener('submit',event=>{event.preventDefault();document.querySelector('#result').textContent='Submissions: '+(++submissions);});
+</script></html>
