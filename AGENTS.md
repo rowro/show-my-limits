@@ -10,6 +10,7 @@ Tauri 2 tray application with a TypeScript/Vite frontend, Rust backend and a mit
 - `src-tauri/src/certificate.rs`, `macos_trust.rs`: CA generation and trust.
 - `src-tauri/src/installer.rs`: pinned official helper downloads and SHA-256 verification.
 - `src-tauri/src/updates.rs`: signed application updates.
+- `tools/mock-claude/`: standalone Go process named `claude` for real HTTPS capture smoke tests without corporate accounts; see `docs/MOCK-CLIENT.md`. Do not install it over the real client or bypass TLS verification.
 - `proxy/limits_addon.py`: quota header extraction; do not persist traffic.
 - `src/assets/show-my-limits.svg`: shared logo source.
 

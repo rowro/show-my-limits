@@ -1,0 +1,58 @@
+name: Mock Claude
+on:
+  workflow_dispatch:
+  push:
+    paths: ['tools/mock-claude/**', 'docs/MOCK-CLIENT.md', '.github/workflows/mock-client.yml']
+  pull_request:
+    paths: ['tools/mock-claude/**', 'docs/MOCK-CLIENT.md', '.github/workflows/mock-client.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - run: go test ./...
+        working-directory: tools/mock-claude
+  build:
+    needs: test
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - {os: darwin, arch: arm64}
+          - {os: darwin, arch: amd64}
+          - {os: windows, arch: amd64}
+          - {os: linux, arch: amd64}
+          - {os: linux, arch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Build standalone client
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        working-directory: tools/mock-claude
+        run: |
+          mkdir -p dist
+          NAME=claude
+          if [ "$GOOS" = windows ]; then NAME=claude.exe; fi
+          go build -trimpath -ldflags='-s -w' -o "dist/$NAME" .
+          cp ../../docs/MOCK-CLIENT.md dist/README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mock-claude-${{ matrix.os }}-${{ matrix.arch }}
+          path: tools/mock-claude/dist/
+          if-no-files-found: error
