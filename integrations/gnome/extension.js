@@ -185,11 +185,11 @@ export default class ShowMyLimitsExtension extends Extension {
             const snapshot = JSON.parse(json);
             if (snapshot?.protocol !== 1 || !Number.isFinite(snapshot.now) || Math.abs(Date.now() / 1000 - snapshot.now) > 10)
                 throw new Error('Unsupported or stale state');
+            // A rendering failure must never keep the fallback tray hidden.
+            this._indicator.update(snapshot);
             const [accepted] = await this._call('Heartbeat', new GLib.Variant('(u)', [1]), '(b)');
             if (!accepted)
                 throw new Error('Protocol mismatch');
-            if (this._enabled && this._owner === owner && this._cancellable === session)
-                this._indicator.update(snapshot);
         } catch {
             if (this._enabled && this._owner === owner && this._cancellable === session)
                 this._indicator.update(null);

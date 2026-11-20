@@ -3,7 +3,7 @@
 .sml-panel-progress { width: 24px; height: 4px; }
 .sml-limits { width: 300px; padding: 12px 16px; spacing: 12px; }
 .sml-heading { font-weight: bold; }
-.sml-muted { font-size: 0.9em; color: #999; }
+.sml-muted { font-size: 0.9em; }
 .sml-quota { spacing: 7px; padding-top: 8px; }
 .sml-quota-row { spacing: 12px; }
 .sml-quota-percent { font-weight: bold; }

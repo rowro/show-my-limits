@@ -15,14 +15,15 @@ export function derive(snapshot, now = Date.now() / 1000) {
     const profile = snapshot.profile;
     const age = now - profile?.observedAt;
     const stale = !Number.isFinite(age) || age < -5 || age >= 600;
-    const live = snapshot.phase === 'listening' && !snapshot.connectionIssue;
+    const live = snapshot.setupComplete && snapshot.phase === 'listening' && !snapshot.connectionIssue;
     const fraction = live && !stale ? remaining(profile?.windows?.['5h'], now) : null;
     const status = !snapshot.setupComplete ? 'Заверши подключение в приложении'
         : snapshot.connectionIssue ? 'Проверь соединение в приложении'
         : snapshot.phase === 'starting' ? 'Запускаем перехват…'
         : snapshot.phase !== 'listening' ? 'Перехват выключен'
         : !profile ? 'Напиши сообщение Claude — появятся лимиты'
-        : stale ? 'Данные устарели · ждём ответ Claude' : 'Лимиты получены';
+        : stale ? 'Данные устарели · ждём ответ Claude'
+        : `Обновлено ${age < 60 ? 'только что' : `${Math.floor(age / 60)} мин назад`}`;
     return {online: true, title: percent(fraction), fraction, status, profile, stale};
 }
 export function resetText(reset, now = Date.now() / 1000) {

@@ -233,7 +233,7 @@ function settings() {
   return `<form id="settings-form"><div class="section-heading"><h2>Настройки</h2></div>
     <fieldset><legend>Оформление</legend><div class="theme-switch" role="group" aria-label="Тема">${([['system','Система'],['light','Светлая'],['dark','Тёмная']] as const).map(([value, label]) => `<button type="button" data-theme="${value}" class="${s.theme === value ? "selected" : ""}" aria-label="${label}" title="${label}" aria-pressed="${s.theme === value}">${icon(value)}</button>`).join("")}</div></fieldset>
     <fieldset><legend>Запуск</legend><label class="client-option"><input type="checkbox" id="launch-at-login" ${state.setup.launchAtLogin ? "checked" : ""} ${state.setup.launchAtLogin == null ? "disabled" : ""}/><span><strong>Запускать вместе с ОС</strong><small>В фоне, со значком в трее.</small></span></label><p class="field-help">${state.setup.launchAtLogin == null ? "Не удалось прочитать настройку автозапуска." : state.setup.platform === "macos" ? "Для автозапуска держи приложение в «Программах»." : "Настройка применяется сразу."}</p></fieldset>
-    ${state.setup.platform === "linux" ? `<fieldset><legend>Панель GNOME</legend><p class="field-help">${esc(gnomeStatus?.message || "Нативные проценты и прогресс для GNOME 46 (Ubuntu 24.04).")}</p>${gnomeStatus?.supported && !gnomeStatus.active ? `<button type="button" class="secondary" data-action="install-gnome" ${busy ? "disabled" : ""}>${gnomeStatus.installed ? "Обновить расширение" : "Установить расширение"}</button>` : ""}${gnomeStatus?.installed && !gnomeStatus.active ? `<p class="field-help">После входа в сеанс включи расширение:</p><pre class="trust-command"><code>gnome-extensions enable show-my-limits@rowro.github.io</code></pre>` : ""}</fieldset>` : ""}
+    <section id="gnome-section"></section>
     <section id="updates-section"></section>
     <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p><details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Система» открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="open-certificate">Открыть сертификат</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
     ${connectionFields({ ...s, ...(settingsDraft || {}) })}
@@ -243,6 +243,13 @@ function settings() {
 function setupStepReady() {
   return [!!state.setup.helperPath, state.setup.certificateExists,
     certificateTrusted(state), true][setupStep];
+}
+
+function renderGnome() {
+  if (deferDuringPointer(renderGnome)) return;
+  const section = document.querySelector<HTMLElement>("#gnome-section");
+  if (!section) return;
+  setMarkupIfChanged(section, `${state.setup.platform === "linux" ? `<fieldset><legend>Панель GNOME</legend><p class="field-help">${esc(gnomeStatus?.message || "Нативные проценты и прогресс для GNOME 46 (Ubuntu 24.04).")}</p>${gnomeStatus?.supported ? `<button type="button" class="secondary" data-action="install-gnome" ${busy ? "disabled" : ""}>${gnomeStatus.installed ? "Обновить расширение" : "Установить расширение"}</button>` : ""}${gnomeStatus?.installed && !gnomeStatus.active ? `<p class="field-help">После входа в сеанс включи расширение:</p><pre class="trust-command"><code>gnome-extensions enable show-my-limits@rowro.github.io</code></pre>` : ""}</fieldset>` : ""}`);
 }
 
 function renderUpdates() {
@@ -256,6 +263,7 @@ function renderUpdates() {
 function renderFooter() {
   if (deferDuringPointer(renderFooter)) return;
   renderUpdates();
+  renderGnome();
   const phase = state.capture.phase;
   const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Сбой TLS-соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
   setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
@@ -320,7 +328,6 @@ async function action(name: string) {
     if (name === "install-gnome") {
       gnomeStatus = await invoke<GnomeStatus>("install_gnome_extension");
       toast = gnomeStatus.message;
-      render();
     }
     if (name === "finish-setup") await finishSetup();
     if (name === "install-helper") await invoke("install_helper");

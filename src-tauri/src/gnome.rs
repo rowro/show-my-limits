@@ -169,7 +169,9 @@ pub async fn install_gnome_extension(app: tauri::AppHandle) -> Result<Integratio
         let _ = Command::new("gnome-extensions")
             .args(["enable", UUID])
             .output();
-        status(&app)
+        let mut result = status(&app)?;
+        result.message = "Расширение установлено. Для загрузки новой версии выйди из сеанса Ubuntu и войди снова. Затем при необходимости включи расширение командой ниже.".into();
+        Ok(result)
     })
     .await
     .map_err(|e| e.to_string())?

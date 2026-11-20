@@ -22,6 +22,7 @@ test('GNOME never presents a stale, stopped or disconnected value as a live tray
     assert.equal(derive(null, now).online, false);
     assert.equal(derive({...normal, protocol: 99}, now).online, false);
     assert.match(derive({...normal, setupComplete: false}, now).status, /подключение/);
+    assert.equal(derive({...normal, setupComplete: false}, now).title, '—');
 });
 test('GNOME reset text does not invent a quota refill or invalid date', () => {
     assert.match(resetText(now - 1, now), /прошло/);
