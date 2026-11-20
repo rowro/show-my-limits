@@ -1,9 +1,9 @@
-Show My Limits 0.1.6
+Show My Limits 0.1.7
 
-- GNOME extension is now an indicator only. Left click toggles the main Show My Limits window; right click opens the system context menu. The duplicate quota popup has been removed; all content uses the main application's theme.
-- GNOME polls authoritative state independently of the hidden WebView/background snapshot producer, and explicitly redraws the panel label when the value changes.
-- Windows/Linux fallback tray numerals keep their original proportions with a smaller percent suffix.
-- Windows lets the OS draw outer rounding and the window border, eliminating the second rounded frame.
-- Existing CA, capture settings and Windows certificate behavior are preserved.
+- Windows: helper launchers and workers are owned through a Windows Job Object. Stop, normal exit and abrupt app-owner termination clean up the owned process tree.
+- The helper is created suspended and attached before running, so its worker cannot escape ownership during startup. Job setup failure aborts startup instead of running unmanaged capture.
+- CA-initialization helpers use the same lifecycle control.
+- Regression tests cover stop, drop, owner crash and preservation of an unrelated process. Tests do not install a packet driver or capture network traffic.
+- Certificates, settings, tray rendering and GNOME integration are unchanged from 0.1.6.
 
-Update the GNOME extension from Settings and start a new session to load extension v3. Target-system visual/click behavior still requires manual verification.
+Before installing, quit old app instances and manually end any previously identified orphaned helpers from older versions. This fixes helper lifetime; concurrent active capture with Throne TUN still needs a real-machine compatibility test.

@@ -1,4 +1,5 @@
 use crate::installer::{self, Installation};
+use crate::process_tree::OwnedChild;
 use crate::quota::{Profile, ProxyState};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -6,7 +7,7 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -125,7 +126,7 @@ pub struct Paths {
 }
 pub struct Inner {
     pub settings: Settings,
-    pub child: Option<Child>,
+    pub child: Option<OwnedChild>,
     pub stop_at: Option<f64>,
     pub started_at: f64,
     pub error: Option<String>,
@@ -650,9 +651,8 @@ impl Shared {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("Не удалось запустить перехватчик: {e}"))?;
+        let mut child = OwnedChild::spawn(&mut command)
+            .map_err(|e| format!("Не удалось безопасно запустить перехватчик: {e}"))?;
         let issue = Arc::new(Mutex::new(None));
         if let Some(stdout) = child.stdout.take() {
             monitor_capture_output(stdout, issue.clone());
@@ -766,7 +766,8 @@ impl Shared {
         if !addon.is_file() {
             return Err("В сборке отсутствует генератор сертификата.".into());
         }
-        let mut child = helper_command(&helper)
+        let mut ca_command = helper_command(&helper);
+        ca_command
             .args([
                 "--mode",
                 "regular",
@@ -790,9 +791,8 @@ impl Shared {
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| e.to_string())?;
+            .stderr(Stdio::null());
+        let mut child = OwnedChild::spawn(&mut ca_command).map_err(|e| e.to_string())?;
         let mut completed = false;
         for _ in 0..100 {
             if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
@@ -964,7 +964,7 @@ fn helper_command(path: &Path) -> Command {
     command
 }
 
-fn signal_stop(child: &mut Child) {
+fn signal_stop(child: &mut OwnedChild) {
     #[cfg(target_os = "linux")]
     unsafe {
         // Cancel the owned launcher, Python worker and pending user-level askpass.
@@ -1154,7 +1154,7 @@ mod tests {
             },
             inner: Mutex::new(Inner {
                 settings: initial.clone(),
-                child: Some(Command::new("/bin/sleep").arg("30").spawn().unwrap()),
+                child: Some(OwnedChild::spawn(Command::new("/bin/sleep").arg("30")).unwrap()),
                 stop_at: None,
                 started_at: now(),
                 error: None,

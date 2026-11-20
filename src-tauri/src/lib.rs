@@ -10,6 +10,7 @@ mod installer;
 mod linux_panel;
 #[cfg(target_os = "macos")]
 mod macos_trust;
+mod process_tree;
 mod quota;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 mod tray_image;
