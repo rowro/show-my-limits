@@ -7,7 +7,7 @@ export function remaining(window, now) {
     return Math.max(0, Math.min(1, 1 - window.utilization));
 }
 export function percent(value) {
-    return value == null ? '—' : `${Math.ceil(value * 100)}%`;
+    return value == null ? '—' : `${new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1}).format(value * 100)}%`;
 }
 export function derive(snapshot, now = Date.now() / 1000) {
     if (!snapshot || snapshot.protocol !== 1)

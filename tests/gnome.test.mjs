@@ -1,13 +1,15 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {derive, remaining, resetText} from '../integrations/gnome/model.js';
+import {derive, percent, remaining, resetText} from '../integrations/gnome/model.js';
 const now = 10000;
 const normal = {protocol: 1, now, phase: 'listening', setupComplete: true, connectionIssue: false,
     profile: {host: 'gateway.example', observedAt: now - 2,
         windows: {'5h': {utilization: 0.35, reset: now + 3600}, '7d': {utilization: 0.42, reset: now + 86400}}}};
 test('GNOME displays remaining quota and distinguishes blocked from missing', () => {
     assert.equal(derive(normal, now).title, '65%');
-    assert.equal(remaining(normal.profile.windows['7d'], now), 0.5800000000000001);
+    assert.equal(percent(remaining(normal.profile.windows['7d'], now)), '58%');
+    assert.equal(percent(0.42), '42%');
+    assert.equal(percent(0.654), '65,4%');
     assert.equal(remaining({utilization: 1}, now), 0);
     assert.equal(remaining({utilization: 1.2}, now), 0);
     assert.equal(remaining({utilization: 0}, now), 1);
