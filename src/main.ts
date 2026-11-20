@@ -12,9 +12,11 @@ const devTools = !native && import.meta.env.DEV;
 const demo = !native && new URLSearchParams(location.search).has("demo");
 const root = document.querySelector<HTMLDivElement>("#app")!;
 let view: "overview" | "setup" | "settings" = "setup";
-let appVersion = "0.1.3";
+let appVersion = "0.1.4";
 type UpdateStatus = { phase: string; version: string | null; downloaded: number; total: number | null; error: string | null; manualInstall: boolean };
 let updateState: UpdateStatus = { phase: "idle", version: null, downloaded: 0, total: null, error: null, manualInstall: false };
+type GnomeStatus = { supported: boolean; installed: boolean; active: boolean; message: string };
+let gnomeStatus: GnomeStatus | null = null;
 let firstStatus = true;
 let setupStep = 0;
 let setupDraft: { hosts: string[]; additionalProcesses: string[] } | null = null;
@@ -231,6 +233,7 @@ function settings() {
   return `<form id="settings-form"><div class="section-heading"><h2>Настройки</h2></div>
     <fieldset><legend>Оформление</legend><div class="theme-switch" role="group" aria-label="Тема">${([['system','Система'],['light','Светлая'],['dark','Тёмная']] as const).map(([value, label]) => `<button type="button" data-theme="${value}" class="${s.theme === value ? "selected" : ""}" aria-label="${label}" title="${label}" aria-pressed="${s.theme === value}">${icon(value)}</button>`).join("")}</div></fieldset>
     <fieldset><legend>Запуск</legend><label class="client-option"><input type="checkbox" id="launch-at-login" ${state.setup.launchAtLogin ? "checked" : ""} ${state.setup.launchAtLogin == null ? "disabled" : ""}/><span><strong>Запускать вместе с ОС</strong><small>В фоне, со значком в трее.</small></span></label><p class="field-help">${state.setup.launchAtLogin == null ? "Не удалось прочитать настройку автозапуска." : state.setup.platform === "macos" ? "Для автозапуска держи приложение в «Программах»." : "Настройка применяется сразу."}</p></fieldset>
+    ${state.setup.platform === "linux" ? `<fieldset><legend>Панель GNOME</legend><p class="field-help">${esc(gnomeStatus?.message || "Нативные проценты и прогресс для GNOME 46 (Ubuntu 24.04).")}</p>${gnomeStatus?.supported && !gnomeStatus.active ? `<button type="button" class="secondary" data-action="install-gnome" ${busy ? "disabled" : ""}>${gnomeStatus.installed ? "Обновить расширение" : "Установить расширение"}</button>` : ""}${gnomeStatus?.installed && !gnomeStatus.active ? `<p class="field-help">После входа в сеанс включи расширение:</p><pre class="trust-command"><code>gnome-extensions enable show-my-limits@rowro.github.io</code></pre>` : ""}</fieldset>` : ""}
     <section id="updates-section"></section>
     <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p><details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Система» открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="open-certificate">Открыть сертификат</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
     ${connectionFields({ ...s, ...(settingsDraft || {}) })}
@@ -314,6 +317,11 @@ async function action(name: string) {
   if (busy) return;
   busy = true; pendingAction = name; toast = null; if (view === "setup") render(); else renderFooter();
   try {
+    if (name === "install-gnome") {
+      gnomeStatus = await invoke<GnomeStatus>("install_gnome_extension");
+      toast = gnomeStatus.message;
+      render();
+    }
     if (name === "finish-setup") await finishSetup();
     if (name === "install-helper") await invoke("install_helper");
     if (name === "confirm-trust") {
@@ -348,6 +356,9 @@ root.addEventListener("click", async event => {
   if (!target) return;
   if (target.dataset.view) {
     view = needsSetup(state) ? "setup" : target.dataset.view === "settings" && view !== "settings" ? "settings" : "overview";
+    if (native && state.setup.platform === "linux" && view === "settings") {
+      try { gnomeStatus = await invoke<GnomeStatus>("gnome_status"); } catch { /* keep fallback */ }
+    }
     toast = null; render();
   }
   if (target.dataset.action) await action(target.dataset.action);
@@ -500,6 +511,17 @@ if (native) {
   updateState=await invoke<UpdateStatus>("update_status");
   await listen<UpdateStatus>("show-my-limits://update", event => { updateState=event.payload; renderUpdates(); });
   await refresh();
+  if (state.setup.platform === "linux") {
+    try { gnomeStatus = await invoke<GnomeStatus>("gnome_status"); } catch { /* ordinary tray remains available */ }
+  }
+  await listen<string>("show-my-limits://navigate", async event => {
+    view = needsSetup(state) ? "setup" : event.payload === "settings" ? "settings" : "overview";
+    if (state.setup.platform === "linux") {
+      try { gnomeStatus = await invoke<GnomeStatus>("gnome_status"); } catch { /* ordinary tray remains available */ }
+    }
+    toast = null;
+    render();
+  });
   await listen<Status>("show-my-limits://status", event => {
     state = event.payload; applyTheme(state.settings.theme);
     if (view !== "settings" || needsSetup(state)) render(); else renderFooter();

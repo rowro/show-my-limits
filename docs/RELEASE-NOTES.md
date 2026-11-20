@@ -1,7 +1,8 @@
-Show My Limits 0.1.3
+Show My Limits 0.1.4
 
-- Linux: tray percentage uses a native text label with a percent sign, without a framed bitmap.
-- Linux: moving the panel no longer triggers hide-on-blur during the drag; outside-click hiding resumes after release.
-- Existing capture settings, certificates and installed helper are preserved.
+- Added an optional native GNOME 46 extension for Ubuntu 24.04: percentage and progress in the panel, quota popover on left click, application menu on right click.
+- Install the extension from Settings → GNOME panel. First installation may require logging out and back in, then enabling the extension.
+- Standard tray returns automatically when the extension is disabled or stops responding.
+- Existing settings, certificates and helper installation are preserved.
 
-Linux tray labels depend on the desktop panel’s AppIndicator support. Please verify dragging and outside-click hiding on your desktop before publishing.
+GNOME Shell interaction still requires a manual smoke test before publication. Other Linux desktops retain the standard tray.

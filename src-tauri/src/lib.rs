@@ -1,6 +1,10 @@
 mod capture_conflict;
 mod certificate;
+#[cfg(any(target_os = "linux", test))]
+mod desktop_state;
 mod engine;
+#[cfg(target_os = "linux")]
+mod gnome;
 mod installer;
 #[cfg(target_os = "linux")]
 mod linux_panel;
@@ -39,6 +43,19 @@ fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
         Err("Перетаскивание доступно только на Linux.".into())
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn gnome_status() -> Result<(), String> {
+    Err("GNOME доступен на Linux.".into())
+}
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn install_gnome_extension() -> Result<(), String> {
+    Err("GNOME доступен на Linux.".into())
+}
+#[cfg(target_os = "linux")]
+use gnome::{gnome_status, install_gnome_extension};
 
 #[tauri::command]
 fn get_status(app: tauri::AppHandle, state: State<'_, Shared>) -> AppStatus {
@@ -445,6 +462,8 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             install_helper,
+            gnome_status,
+            install_gnome_extension,
             get_status,
             updates::update_status,
             updates::check_update,
@@ -466,6 +485,11 @@ pub fn run() {
         .setup(|app| {
             app.manage(PopoverState::default());
             app.manage(updates::Updates::default());
+            #[cfg(target_os = "linux")]
+            {
+                app.manage(desktop_state::DesktopState::default());
+                gnome::start(app.handle());
+            }
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 let native = window.ns_window()?.cast::<objc2::runtime::AnyObject>();
@@ -532,6 +556,8 @@ pub fn run() {
                 let mut previous_title = String::new();
                 loop {
                     let status = handle.state::<Shared>().status(&handle);
+                    #[cfg(target_os = "linux")]
+                    handle.state::<desktop_state::DesktopState>().update(&status);
                     let profile = status
                         .profiles
                         .iter()
@@ -545,6 +571,8 @@ pub fn run() {
                         "—".into()
                     };
                     if let Some(tray) = handle.tray_by_id("show-my-limits") {
+                        #[cfg(target_os = "linux")]
+                        let _ = tray.set_visible(!handle.state::<desktop_state::DesktopState>().active());
                         if title != previous_title {
                             #[cfg(any(target_os = "macos", target_os = "linux"))]
                             let _ = tray.set_title(Some(&title));
