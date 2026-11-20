@@ -12,6 +12,7 @@
 macOS / Linux:
 
 ```sh
+chmod +x ./claude
 ./claude --scenario normal
 ```
 
