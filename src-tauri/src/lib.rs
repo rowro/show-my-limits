@@ -16,6 +16,10 @@ mod quota;
 mod tray_image;
 mod updates;
 #[cfg(target_os = "windows")]
+mod windows_taskbar;
+#[cfg(target_os = "windows")]
+mod windows_tray_text;
+#[cfg(target_os = "windows")]
 mod windows_trust;
 
 use engine::{AppStatus, Settings, Shared};
@@ -498,19 +502,22 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             let builder = builder.title("—");
             #[cfg(target_os = "windows")]
-            let builder = builder.icon(tray_image::render("—", false));
+            let app_icon = app.default_window_icon().cloned().map(|icon| icon.to_owned());
+            #[cfg(target_os = "windows")]
+            let builder = builder.icon(app_icon.unwrap_or_else(|| tray_image::render("—", false)));
             #[cfg(target_os = "linux")]
             let builder = builder.icon(tray_image::render("—", false));
             builder.build(app)?;
+            #[cfg(target_os = "windows")]
+            windows_taskbar::init(app.handle().clone());
             let startup = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || startup.state::<Shared>().start_on_launch(&startup));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                #[cfg(not(target_os = "windows"))]
                 let mut previous_title = String::new();
                 #[cfg(target_os = "linux")]
                 let mut tray_visible = true;
-                #[cfg(any(target_os = "linux", target_os = "windows"))]
-                let mut previous_light = None;
                 loop {
                     let status = handle.state::<Shared>().status(&handle);
                     let profile = status
@@ -518,13 +525,24 @@ pub fn run() {
                         .iter()
                         .find(|p| Some(&p.id) == status.settings.selected_profile.as_ref())
                         .or_else(|| status.profiles.first());
-                    let title = if status.capture.phase == "listening"
-                        && status.connection_issue.is_none()
+                    let profile = profile.filter(|_| {
+                        status.capture.phase == "listening" && status.connection_issue.is_none()
+                    });
+                    let title = profile.map(|p| p.title(status.now)).unwrap_or("—".into());
+                    #[cfg(target_os = "windows")]
                     {
-                        profile.map(|p| p.title(status.now)).unwrap_or("—".into())
-                    } else {
-                        "—".into()
-                    };
+                        let weekly = profile
+                            .map(|p| p.window_title("7d", status.now))
+                            .unwrap_or("—".into());
+                        let values = [title.clone(), weekly];
+                        let controls = tauri::async_runtime::spawn_blocking(windows_taskbar::occupied_controls)
+                            .await
+                            .ok()
+                            .flatten();
+                        let _ = handle.run_on_main_thread(move || {
+                            windows_taskbar::update(&values, controls.as_ref());
+                        });
+                    }
                     if let Some(tray) = handle.tray_by_id("show-my-limits") {
                         #[cfg(target_os = "linux")]
                         {
@@ -533,22 +551,16 @@ pub fn run() {
                                 if tray.set_visible(visible).is_ok() { tray_visible = visible; }
                             }
                         }
-                        #[cfg(any(target_os = "linux", target_os = "windows"))]
-                        let light = cfg!(target_os = "windows") && handle.get_webview_window("main").and_then(|w| w.theme().ok()) == Some(tauri::Theme::Light);
-                        #[cfg(target_os = "macos")]
-                        let changed = title != previous_title;
-                        #[cfg(any(target_os = "linux", target_os = "windows"))]
-                        let changed = title != previous_title || previous_light != Some(light);
-                        if changed {
+                        #[cfg(not(target_os = "windows"))]
+                        if title != previous_title {
                             #[cfg(target_os = "macos")]
                             let _ = tray.set_title(Some(&title));
-                            #[cfg(any(target_os = "linux", target_os = "windows"))]
-                            { let _ = tray.set_icon(Some(tray_image::render(&title, light))); previous_light = Some(light); }
+                            #[cfg(target_os = "linux")]
+                            let _ = tray.set_icon(Some(tray_image::render(&title, false)));
                             previous_title.clone_from(&title);
                         }
-                        let _ = tray.set_tooltip(Some(format!(
-                            "Show My Limits · остаток за 5 часов: {title}"
-                        )));
+                        let tooltip = format!("Show My Limits · остаток за 5 часов: {title}");
+                        let _ = tray.set_tooltip(Some(tooltip));
                     }
                     let _ = handle.emit("show-my-limits://status", &status);
                     // Pace status polling without blocking the async worker.
@@ -584,6 +596,8 @@ pub fn run() {
         .expect("Could not initialize Show My Limits");
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
+            #[cfg(target_os = "windows")]
+            windows_taskbar::close();
             app.state::<Shared>().shutdown();
         }
     });

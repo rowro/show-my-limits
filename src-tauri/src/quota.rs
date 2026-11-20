@@ -32,11 +32,15 @@ pub struct Profile {
 
 impl Profile {
     pub fn title(&self, now: f64) -> String {
+        self.window_title("5h", now)
+    }
+
+    pub fn window_title(&self, period: &str, now: f64) -> String {
         let age = now - self.observed_at;
         if !(0.0..600.0).contains(&age) {
             return "—".into();
         }
-        match self.windows.get("5h").and_then(|w| w.remaining(now)) {
+        match self.windows.get(period).and_then(|w| w.remaining(now)) {
             Some(value) => format!("{}%", (value * 100.0).ceil() as u32),
             None => "—".into(),
         }
@@ -86,9 +90,14 @@ mod tests {
             overage_reason: None,
         };
         assert_eq!(profile.title(1001.0), "25%");
+        assert_eq!(profile.window_title("7d", 1001.0), "—");
+        profile.windows.insert("7d".into(), Window { utilization: Some(0.10), ..Window::default() });
+        assert_eq!(profile.window_title("7d", 1001.0), "90%");
         assert_eq!(profile.title(1601.0), "—");
+        assert_eq!(profile.window_title("7d", 1601.0), "—");
         profile.observed_at = 1999.0;
         assert_eq!(profile.title(2001.0), "—");
+        assert_eq!(profile.window_title("7d", 2001.0), "90%");
         assert_eq!(
             Window {
                 utilization: Some(1.2),

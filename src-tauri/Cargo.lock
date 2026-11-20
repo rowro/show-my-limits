@@ -3924,6 +3924,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "url",
+ "windows",
  "windows-sys 0.61.2",
  "x509-parser",
  "zip 6.0.0",
