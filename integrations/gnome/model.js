@@ -26,20 +26,6 @@ export function derive(snapshot, now = Date.now() / 1000) {
         : `Обновлено ${age < 60 ? 'только что' : `${Math.floor(age / 60)} мин назад`}`;
     return {online: true, title: percent(fraction), fraction, status, profile, stale};
 }
-export function resetText(reset, now = Date.now() / 1000) {
-    if (!Number.isFinite(reset) || reset <= 0 || reset >= 253402300800)
-        return 'Время сброса неизвестно';
-    if (reset <= now)
-        return 'Время сброса прошло · ждём новые данные';
-    const minutes = Math.max(1, Math.ceil((reset - now) / 60));
-    const duration = minutes >= 1440 ? `${Math.floor(minutes / 1440)} д ${Math.floor(minutes % 1440 / 60)} ч`
-        : minutes >= 60 ? `${Math.floor(minutes / 60)} ч ${minutes % 60} мин` : `${minutes} мин`;
-    const date = new Date(reset * 1000).toLocaleString('ru-RU', {
-        day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
-    });
-    return `Сброс ${date} · через ${duration}`;
-}
-
 // Keep transient transport errors separate from real app/process disappearance.
 export class SnapshotTracker {
     constructor() { this.reset(); }

@@ -12,6 +12,7 @@ const XML: &str = r#"<node><interface name="io.github.rowro.ShowMyLimits1">
 <method name="GetState"><arg direction="out" type="s" name="json"/></method>
 <method name="Heartbeat"><arg direction="in" type="u" name="protocol"/><arg direction="out" type="b" name="accepted"/></method>
 <method name="Detach"/>
+<method name="ToggleWindow"><arg direction="in" type="s" name="view"/></method>
 <method name="OpenWindow"><arg direction="in" type="s" name="view"/></method>
 <method name="Quit"/>
 </interface></node>"#;
@@ -32,6 +33,10 @@ pub fn start(app: &tauri::AppHandle) {
                     let state = handle.state::<DesktopState>();
                     match method {
                         "GetState" => {
+                            // Read the authoritative state on every request, even
+                            // when the WebView is hidden and background UI work stalls.
+                            let status = handle.state::<crate::engine::Shared>().status(&handle);
+                            state.update(&status);
                             invocation.return_value(Some(&(state.snapshot(),).to_variant()))
                         }
                         "Heartbeat" => {
@@ -44,7 +49,8 @@ pub fn start(app: &tauri::AppHandle) {
                             state.detach();
                             invocation.return_value(None);
                         }
-                        "OpenWindow" => {
+                        "OpenWindow" | "ToggleWindow" => {
+                            let toggle = method == "ToggleWindow";
                             let view = parameters.get::<(String,)>().map(|(v,)| v);
                             if !matches!(view.as_deref(), Some("settings" | "overview")) {
                                 invocation.return_dbus_error(
@@ -56,8 +62,14 @@ pub fn start(app: &tauri::AppHandle) {
                             let view = view.unwrap();
                             let app = handle.clone();
                             let _ = handle.run_on_main_thread(move || {
-                                crate::show_popover(&app, None);
-                                let _ = app.emit("show-my-limits://navigate", view);
+                                if toggle {
+                                    // Match the other platforms: preserve the current
+                                    // main-window screen when toggling from the tray.
+                                    crate::toggle_window(&app, None);
+                                } else {
+                                    crate::show_popover(&app, None);
+                                    let _ = app.emit("show-my-limits://navigate", view);
+                                }
                             });
                             invocation.return_value(None);
                         }

@@ -169,3 +169,11 @@ header { padding-bottom: 12px; }
 :root[data-platform="linux"] .brand:active { cursor: grabbing; }
 
 .trust-command { margin: 10px 0; padding: 10px; background: var(--accent-soft); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 9px; line-height: 1.6; user-select: text; }
+
+/* Windows owns outer rounding and the frame. Fill the WebView up to that clip
+   instead of drawing a second, more rounded panel inside the native window. */
+:root[data-platform="windows"] .app-shell {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}

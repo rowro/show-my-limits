@@ -512,8 +512,6 @@ pub fn run() {
                 let mut previous_light = None;
                 loop {
                     let status = handle.state::<Shared>().status(&handle);
-                    #[cfg(target_os = "linux")]
-                    handle.state::<desktop_state::DesktopState>().update(&status);
                     let profile = status
                         .profiles
                         .iter()

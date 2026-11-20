@@ -35,6 +35,13 @@ with tempfile.TemporaryDirectory(prefix='sml-gnome-smoke-') as temporary:
             snapshot = json.loads(ast.literal_eval(result.stdout)[0])
             assert set(snapshot) == {'protocol', 'now', 'phase', 'setupComplete', 'connectionIssue', 'profile'}, snapshot
             assert snapshot['protocol'] == 1 and snapshot['profile'] is None
+            # The main window has never been shown. State must advance anyway.
+            time.sleep(1.25)
+            hidden = json.loads(ast.literal_eval(call('GetState').stdout)[0])
+            assert hidden['now'] > snapshot['now'] + 1.0, 'state froze while the window was hidden'
+            assert call('ToggleWindow', 'invalid-view', check=False).returncode != 0
+            call('ToggleWindow', 'overview')
+            call('ToggleWindow', 'overview')
             assert 'false' in call('Heartbeat', '999').stdout
             assert 'true' in call('Heartbeat', '1').stdout
             assert call('OpenWindow', 'invalid-view', check=False).returncode != 0

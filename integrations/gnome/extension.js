@@ -3,22 +3,14 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
-import Pango from 'gi://Pango';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
-import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import {derive, percent, remaining, resetText, SnapshotTracker} from './model.js';
+import {derive, SnapshotTracker} from './model.js';
 
 const BUS = 'io.github.rowro.ShowMyLimits';
 const PATH = '/io/github/rowro/ShowMyLimits';
 const IFACE = 'io.github.rowro.ShowMyLimits1';
-function label(text, style = '') {
-    const actor = new St.Label({text, style_class: style, x_expand: true});
-    actor.clutter_text.line_wrap = true;
-    actor.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-    return actor;
-}
 function progress(style) {
     const actor = new St.DrawingArea({style_class: style, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
     actor.fraction = null;
@@ -40,22 +32,6 @@ function progress(style) {
     });
     return actor;
 }
-function quotaCard(name) {
-    const box = new St.BoxLayout({vertical: true, style_class: 'sml-quota'});
-    const row = new St.BoxLayout({style_class: 'sml-quota-row'});
-    const title = label(name, 'sml-heading');
-    const value = new St.Label({text: '—', style_class: 'sml-quota-percent'});
-    row.add_child(title);
-    row.add_child(value);
-    box.add_child(row);
-    const bar = progress('sml-quota-progress');
-    box.add_child(bar);
-    const used = label('Использовано —', 'sml-muted');
-    const reset = label('Время сброса неизвестно', 'sml-muted');
-    box.add_child(used);
-    box.add_child(reset);
-    return {box, value, bar, used, reset};
-}
 const LimitsIndicator = GObject.registerClass(class LimitsIndicator extends PanelMenu.Button {
     _init(openApp, quitApp) {
         super._init(0.0, 'Show My Limits');
@@ -69,75 +45,52 @@ const LimitsIndicator = GObject.registerClass(class LimitsIndicator extends Pane
         box.add_child(this._bar);
         this.add_child(box);
 
-        const content = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        const column = new St.BoxLayout({vertical: true, style_class: 'sml-limits'});
-        column.add_child(label('Show My Limits', 'sml-heading'));
-        this._host = label('', 'sml-muted');
-        this._status = label('Приложение не запущено', 'sml-muted');
-        column.add_child(this._host);
-        column.add_child(this._status);
-        this._cards = {'5h': quotaCard('5 часов'), '7d': quotaCard('7 дней')};
-        for (const card of Object.values(this._cards))
-            column.add_child(card.box);
-        content.add_child(column);
-        this.menu.addMenuItem(content);
-        this._openItem = this.menu.addAction('Открыть приложение', () => this._openApp('overview'));
-
-        this._context = new PopupMenu.PopupMenu(this, 0.0, St.Side.TOP);
-        Main.uiGroup.add_child(this._context.actor);
-        this._context.actor.hide();
-        Main.panel.menuManager.addMenu(this._context);
-        this._context.addAction('Открыть приложение', () => this._openApp('overview'));
-        this._context.addAction('Настройки', () => this._openApp('settings'));
-        this._quitItem = this._context.addAction('Выйти из Show My Limits', () => this._quitApp());
+        // The Shell extension owns only the indicator and a context menu.
+        // All quota/settings views belong to the single themed Tauri window.
+        this.menu.addAction('Открыть приложение', () => this._openApp('overview', false));
+        this.menu.addAction('Настройки', () => this._openApp('settings', false));
+        this._quitItem = this.menu.addAction('Выйти из Show My Limits', () => this._quitApp());
     }
     vfunc_event(event) {
         const type = event.type();
         if (type === Clutter.EventType.BUTTON_PRESS || type === Clutter.EventType.TOUCH_BEGIN) {
-            const right = type === Clutter.EventType.BUTTON_PRESS && event.get_button() === Clutter.BUTTON_SECONDARY;
-            if (right) {
-                this.menu.close();
-                this._context.toggle();
-            } else if (type === Clutter.EventType.TOUCH_BEGIN || event.get_button() === Clutter.BUTTON_PRIMARY) {
-                this._context.close();
+            const button = type === Clutter.EventType.TOUCH_BEGIN ? Clutter.BUTTON_PRIMARY : event.get_button();
+            if (button === Clutter.BUTTON_SECONDARY) {
                 this.menu.toggle();
+            } else if (button === Clutter.BUTTON_PRIMARY) {
+                this.menu.close();
+                this._openApp('overview', true);
             }
             return Clutter.EVENT_STOP;
         }
-        if (type === Clutter.EventType.KEY_PRESS && [Clutter.KEY_Return, Clutter.KEY_space].includes(event.get_key_symbol())) {
-            this._context.close();
-            this.menu.toggle();
-            return Clutter.EVENT_STOP;
+        if (type === Clutter.EventType.KEY_PRESS) {
+            const key = event.get_key_symbol();
+            if ([Clutter.KEY_Return, Clutter.KEY_space].includes(key)) {
+                this.menu.close();
+                this._openApp('overview', true);
+                return Clutter.EVENT_STOP;
+            }
+            if (key === Clutter.KEY_Menu) {
+                this.menu.toggle();
+                return Clutter.EVENT_STOP;
+            }
         }
         return Clutter.EVENT_PROPAGATE;
     }
     update(snapshot) {
-        const now = Date.now() / 1000;
-        const state = derive(snapshot, now);
-        this._percentage.text = state.title;
-        this.accessible_name = `Show My Limits · ${state.title} · ${state.status}`;
-        this._bar.fraction = state.fraction;
-        this._bar.queue_repaint();
-        this._status.text = state.status;
-        this._host.text = state.profile?.host || '';
-        this._host.visible = Boolean(state.profile?.host);
-        this._openItem.label.text = state.online ? 'Открыть приложение' : 'Запустить Show My Limits';
-        this._quitItem.setSensitive(state.online);
-        for (const [key, card] of Object.entries(this._cards)) {
-            const window = state.profile?.windows?.[key];
-            const left = remaining(window, now);
-            card.box.visible = Boolean(state.profile);
-            card.value.text = `${percent(left)} осталось`;
-            card.bar.fraction = left;
-            card.bar.queue_repaint();
-            card.used.text = `Использовано ${Number.isFinite(window?.utilization) && window.utilization >= 0 ? percent(window.utilization) : '—'}`;
-            card.reset.text = resetText(window?.reset, now);
+        const state = derive(snapshot);
+        if (this._percentage.get_text() !== state.title) {
+            this._percentage.set_text(state.title);
+            // Update the mapped panel actor itself; no popup lifecycle involved.
+            this._percentage.queue_relayout();
+            this._percentage.queue_redraw();
         }
-    }
-    destroy() {
-        this._context?.destroy();
-        this._context = null;
-        super.destroy();
+        this.accessible_name = `Show My Limits · ${state.title} · ${state.status}`;
+        if (this._bar.fraction !== state.fraction) {
+            this._bar.fraction = state.fraction;
+            this._bar.queue_repaint();
+        }
+        this._quitItem.setSensitive(state.online);
     }
 });
 
@@ -148,7 +101,7 @@ export default class ShowMyLimitsExtension extends Extension {
         this._owner = null;
         this._pending = false;
         this._cancellable = new Gio.Cancellable();
-        this._indicator = new LimitsIndicator(view => this._openApp(view), () => this._command('Quit'));
+        this._indicator = new LimitsIndicator((view, toggle) => this._openApp(view, toggle), () => this._command('Quit'));
         Main.panel.addToStatusArea(this.uuid, this._indicator);
         this._indicator.update(null);
         this._watcher = Gio.bus_watch_name(Gio.BusType.SESSION, BUS, Gio.BusNameWatcherFlags.NONE,
@@ -204,9 +157,9 @@ export default class ShowMyLimitsExtension extends Extension {
         try { await this._call(method, parameters); }
         catch { if (this._enabled) Main.notify('Show My Limits', 'Приложение не отвечает. Открой его из меню приложений.'); }
     }
-    _openApp(view) {
+    _openApp(view, toggle = false) {
         if (this._owner) {
-            this._command('OpenWindow', new GLib.Variant('(s)', [view]));
+            this._command(toggle ? 'ToggleWindow' : 'OpenWindow', new GLib.Variant('(s)', [view]));
             return;
         }
         const app = ['Show My Limits.desktop', 'show-my-limits.desktop', 'io.github.rowro.showmylimits.desktop']

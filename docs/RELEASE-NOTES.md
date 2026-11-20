@@ -1,10 +1,9 @@
-Show My Limits 0.1.5
+Show My Limits 0.1.6
 
-- Linux/Windows: visible application logo without quota data; transparent percentage artwork includes the percent sign, without a frame or reserved label gap.
-- Capture state is isolated per launch. Brief read errors retain a coherent sample; legacy workers cannot overwrite current-session data.
-- GNOME: tolerate transient transport delays and change fallback tray visibility only on transitions.
-- GNOME: install during first setup; update by button and finish enabling automatically after next login. A button opens GNOME's normal logout confirmation; no terminal commands needed.
-- Windows: check the exact current CA in native Root/Disallowed stores and install it into Current User Root by button. No firewall or TLS verification changes.
-- Mock client: show unverified peer issuer and certificate fingerprint when TLS validation fails.
+- GNOME extension is now an indicator only. Left click toggles the main Show My Limits window; right click opens the system context menu. The duplicate quota popup has been removed; all content uses the main application's theme.
+- GNOME polls authoritative state independently of the hidden WebView/background snapshot producer, and explicitly redraws the panel label when the value changes.
+- Windows/Linux fallback tray numerals keep their original proportions with a smaller percent suffix.
+- Windows lets the OS draw outer rounding and the window border, eliminating the second rounded frame.
+- Existing CA, capture settings and Windows certificate behavior are preserved.
 
-GNOME interaction and Windows capture still need manual testing on the target systems. Existing CA and settings are preserved; legacy root proxy state is not used as a current quota sample.
+Update the GNOME extension from Settings and start a new session to load extension v3. Target-system visual/click behavior still requires manual verification.
