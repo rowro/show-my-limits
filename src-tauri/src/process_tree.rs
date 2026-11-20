@@ -307,10 +307,16 @@ mod tests {
             let worker = running_handle(&dir, "worker");
             if stop {
                 capture.kill().unwrap();
+                // Prove Stop works while the owner/job handle is still alive;
+                // dropping the wrapper must not mask a broken explicit stop.
+                assert_exited(&launcher);
+                assert_exited(&worker);
+                drop(capture);
+            } else {
+                drop(capture);
+                assert_exited(&launcher);
+                assert_exited(&worker);
             }
-            drop(capture);
-            assert_exited(&launcher);
-            assert_exited(&worker);
             assert!(sibling.0.try_wait().unwrap().is_none());
         }
         let dir = root.path().join("crash");
