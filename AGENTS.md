@@ -52,7 +52,7 @@ Persist only quota state and limited diagnostics. Never commit CA private keys, 
 
 ## UI conventions
 
-The undecorated panel opens from the tray and hides on blur; no draggable window or tabs. Settings toggle through the gear. Use dynamic content height, compact spacing and all three themes. Until setup is complete show the wizard; after capture starts show quick-start instructions until a fresh response arrives. Default processes are `Claude` and `claude`, plus optional process names. The current UI configures one server; preserve existing stored data when changing the UI.
+The undecorated panel opens from the tray and hides on blur; no tabs. macOS remains non-draggable. On Linux the brand area starts native dragging; keep buttons interactive and preserve manual placement across resizes/opens because tray geometry is not reliable under Wayland. Settings toggle through the gear. Use dynamic content height, compact spacing and all three themes. Until setup is complete show the wizard; after capture starts show quick-start instructions until a fresh response arrives. Default processes are `Claude` and `claude`, plus optional process names. The current UI configures one server; preserve existing stored data when changing the UI.
 
 ## Distribution
 

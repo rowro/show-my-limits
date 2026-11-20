@@ -90,6 +90,7 @@ function shell() {
 }
 
 function render() {
+  document.documentElement.dataset.platform = state.setup.platform;
   if (deferDuringPointer(render)) return;
   if (needsSetup(state)) {
     const required = !state.setup.helperPath ? 0 : !state.setup.certificateExists ? 1 : !certificateTrusted(state) ? 2 : 3;
@@ -311,6 +312,17 @@ async function action(name: string) {
   } catch (error) { toast = String(error); }
   finally { busy = false; pendingAction = ""; if (view === "setup") render(); else renderFooter(); }
 }
+
+root.addEventListener("mousedown", event => {
+  if (!native || state.setup.platform !== "linux" || event.button !== 0) return;
+  const target = event.target as HTMLElement;
+  if (!target.closest(".brand") || target.closest("button,a,input,select,textarea")) return;
+  event.preventDefault();
+  void invoke("start_window_drag").catch(error => {
+    toast = `Не удалось переместить окно: ${String(error)}`;
+    renderFooter();
+  }).finally(finishPointerInteraction);
+});
 
 root.addEventListener("click", async event => {
   const target = (event.target as HTMLElement).closest<HTMLElement>("[data-view],[data-action],[data-theme]");

@@ -24,6 +24,19 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager, State};
 
 #[tauri::command]
+fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        window.start_dragging().map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+        Err("Перетаскивание доступно только на Linux.".into())
+    }
+}
+
+#[tauri::command]
 fn get_status(app: tauri::AppHandle, state: State<'_, Shared>) -> AppStatus {
     state.status(&app)
 }
@@ -242,6 +255,11 @@ fn panel_position(
 }
 
 fn position_popover(window: &tauri::WebviewWindow, rect: Option<tauri::Rect>) {
+    // Wayland compositors own placement; tray coordinates may be unavailable.
+    // Preserve the user's chosen Linux position on resize and subsequent opens.
+    if cfg!(target_os = "linux") {
+        return;
+    }
     let Some(rect) = rect else {
         return;
     };
@@ -429,6 +447,7 @@ pub fn run() {
             updates::install_update,
             updates::open_releases,
             resize_popover,
+            start_window_drag,
             set_launch_at_login,
             complete_setup,
             save_settings,

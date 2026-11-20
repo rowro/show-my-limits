@@ -163,3 +163,7 @@ header { padding-bottom: 12px; }
 .process-defaults code { color: var(--ink); font-size: 10px; }
 
 .update-button { margin-top: 8px; }
+
+/* Linux tray protocols may not provide an anchor; move the panel by its brand. */
+:root[data-platform="linux"] .brand { cursor: grab; user-select: none; }
+:root[data-platform="linux"] .brand:active { cursor: grabbing; }

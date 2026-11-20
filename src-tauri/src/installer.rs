@@ -108,6 +108,50 @@ fn extract(archive: &Path, output: &Path, zip: bool) -> Result<(), String> {
     }
 }
 
+fn download_error(error: reqwest::Error) -> String {
+    use std::error::Error;
+    let mut causes = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        causes.push_str(": ");
+        causes.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    describe_download_error(
+        &causes,
+        error.is_timeout(),
+        error.status().map(|s| s.as_u16()),
+    )
+}
+
+fn describe_download_error(causes: &str, timeout: bool, status: Option<u16>) -> String {
+    let causes = causes.to_lowercase();
+    let detail = if let Some(status) = status {
+        format!("Сервер загрузки вернул HTTP {status}. Повторите попытку позже.")
+    } else if [
+        "dns",
+        "failed to lookup",
+        "name or service not known",
+        "name resolution",
+        "nodename nor servname",
+    ]
+    .iter()
+    .any(|part| causes.contains(part))
+    {
+        "Не удалось определить IP-адрес downloads.mitmproxy.org. Проверьте DNS и подключение к интернету в этой системе.".into()
+    } else if timeout {
+        "Сервер downloads.mitmproxy.org не ответил вовремя. Проверьте подключение к интернету и повторите попытку.".into()
+    } else if causes.contains("certificate")
+        || causes.contains("unknownissuer")
+        || causes.contains("unknown issuer")
+    {
+        "Не удалось проверить TLS-сертификат сервера загрузки. Проверьте дату системы и доверие к сертификатам вашего сетевого прокси.".into()
+    } else {
+        "Не удалось соединиться с downloads.mitmproxy.org. Проверьте интернет, DNS и сетевой прокси в этой системе.".into()
+    };
+    format!("Не удалось загрузить mitmproxy. {detail}")
+}
+
 pub fn install_to(base: &Path, mut progress: impl FnMut(Installation)) -> Result<PathBuf, String> {
     let pkg = package(std::env::consts::OS, std::env::consts::ARCH)?;
     if let Some(path) = installed_path(base) {
@@ -134,7 +178,7 @@ pub fn install_to(base: &Path, mut progress: impl FnMut(Installation)) -> Result
         ))
         .send()
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Не удалось загрузить mitmproxy: {e}"))?;
+        .map_err(download_error)?;
     let total = response.content_length();
     if total.is_some_and(|size| size > MAX_DOWNLOAD) {
         return Err("Размер загрузки превышает ожидаемый.".into());
@@ -200,6 +244,30 @@ pub fn install_to(base: &Path, mut progress: impl FnMut(Installation)) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn download_diagnostics_distinguish_dns_tls_timeout_and_http() {
+        assert!(
+            describe_download_error(
+                "error sending request: dns error: failed to lookup address",
+                false,
+                None
+            )
+            .contains("Проверьте DNS")
+        );
+        assert!(
+            describe_download_error("invalid peer certificate: UnknownIssuer", false, None)
+                .contains("TLS-сертификат")
+        );
+        assert!(
+            describe_download_error("operation timed out", true, None)
+                .contains("не ответил вовремя")
+        );
+        assert!(describe_download_error("HTTP error", false, Some(404)).contains("HTTP 404"));
+        assert!(
+            !describe_download_error("connection reset", false, None).contains("TLS-сертификат")
+        );
+    }
+
     #[test]
     fn manifests_and_integrity() {
         for (os, arch) in [
