@@ -152,9 +152,9 @@ mod tests {
     }
     #[test]
     fn uninstalled_ca_is_not_trusted_by_the_operating_system() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test-ca.pem");
-        assert!(!is_trusted(&path).unwrap());
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        fs::write(fixture.path(), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        assert!(!is_trusted(fixture.path()).unwrap());
     }
     #[test]
     #[ignore = "read-only probe of the local application CA; never installs or changes trust"]

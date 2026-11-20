@@ -1,11 +1,10 @@
 use crate::installer::{self, Installation};
 use crate::process_tree::OwnedChild;
 use crate::quota::{Profile, ProxyState};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     collections::BTreeSet,
     fs,
-    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -21,86 +20,8 @@ pub fn now() -> f64 {
         .as_secs_f64()
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Settings {
-    pub theme: String,
-    pub hosts: Vec<String>,
-    pub clients: Vec<String>,
-    pub additional_processes: Vec<String>,
-    pub selected_profile: Option<String>,
-    pub helper_path: String,
-    pub certificate_trust_confirmed: bool,
-}
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            theme: "system".into(),
-            hosts: vec![],
-            clients: vec!["desktop".into(), "terminal".into()],
-            additional_processes: vec![],
-            selected_profile: None,
-            helper_path: String::new(),
-            certificate_trust_confirmed: false,
-        }
-    }
-}
-
-pub fn normalize_host(input: &str) -> Result<String, String> {
-    let raw = input.trim();
-    if raw.is_empty() || raw.len() > 512 {
-        return Err("Укажите домен сервера.".into());
-    }
-    let url = url::Url::parse(&if raw.contains("://") {
-        raw.to_owned()
-    } else {
-        format!("https://{raw}")
-    })
-    .map_err(|_| format!("Некорректный адрес сервера: {raw}"))?;
-    if !["https", "http"].contains(&url.scheme())
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err("Используйте домен или HTTP(S)-адрес без логина и пароля.".into());
-    }
-    url.host_str()
-        .map(|host| {
-            host.trim_matches(['[', ']'])
-                .trim_end_matches('.')
-                .to_lowercase()
-        })
-        .filter(|host| !host.is_empty())
-        .ok_or_else(|| "В адресе отсутствует домен.".into())
-}
-
-fn normalized_processes(processes: &[String]) -> Result<Vec<String>, String> {
-    if processes.len() > 32 {
-        return Err("Можно добавить до 32 процессов.".into());
-    }
-    let mut names = BTreeSet::new();
-    for process in processes {
-        let name = process.trim();
-        if name.is_empty() {
-            continue;
-        }
-        if name.len() > 128
-            || name
-                .chars()
-                .any(|c| c.is_control() || matches!(c, ',' | '!' | '/' | '\\'))
-            || name.chars().all(|c| c.is_ascii_digit())
-        {
-            return Err("Укажите имя процесса, без пути, PID и символов ! или запятой.".into());
-        }
-        names.insert(name.to_owned());
-    }
-    Ok(names.into_iter().collect())
-}
-
-pub fn selector(processes: &[String]) -> Result<String, String> {
-    let mut names = BTreeSet::from(["Claude".to_owned(), "claude".to_owned()]);
-    names.extend(normalized_processes(processes)?);
-    Ok(names.into_iter().collect::<Vec<_>>().join(","))
-}
+use crate::settings::normalized_processes;
+pub use crate::settings::{Settings, normalize_host, selector};
 
 fn migrate_process_settings(settings: &mut Settings) {
     if settings.clients.iter().any(|client| client == "vscode") {
@@ -127,6 +48,7 @@ pub struct Paths {
 pub struct Inner {
     pub settings: Settings,
     pub child: Option<OwnedChild>,
+    pub capture_lock: Option<std::fs::File>,
     pub stop_at: Option<f64>,
     pub started_at: f64,
     pub error: Option<String>,
@@ -212,6 +134,7 @@ impl Shared {
             inner: Mutex::new(Inner {
                 settings,
                 child: None,
+                capture_lock: None,
                 stop_at: None,
                 started_at: 0.0,
                 error: None,
@@ -287,6 +210,7 @@ impl Shared {
                 ));
             }
             inner.child = None;
+            inner.capture_lock = None;
             inner.stop_at = None;
         }
         if inner.child.is_none() && inner.error.is_some() {
@@ -406,6 +330,7 @@ impl Shared {
     }
 
     pub fn install_helper(&self, app: &AppHandle) -> Result<(), String> {
+        let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
         let settings = self
             .inner
             .lock()
@@ -553,6 +478,7 @@ impl Shared {
             return Err("Добавьте сервер в настройках.".into());
         }
         let clients = selector(&inner.settings.additional_processes)?;
+        let capture_lock = crate::coordination::lock(&self.paths.proxy, "capture")?;
         crate::capture_conflict::ensure_exclusive()?;
         if system_proxy_active() {
             return Err("Обнаружен другой системный прокси. Завершите его захват перед запуском Show My Limits; настройки сети Show My Limits не изменяет.".into());
@@ -598,6 +524,7 @@ impl Shared {
         let state_dir = self.paths.proxy.join("runs").join(&run_id);
         fs::create_dir_all(&state_dir)
             .map_err(|e| format!("Не удалось подготовить состояние захвата: {e}"))?;
+        crate::coordination::publish_run(&self.paths.proxy, &run_id)?;
         let mut command = helper_command(&helper);
         #[cfg(target_os = "linux")]
         {
@@ -664,6 +591,7 @@ impl Shared {
         inner.run_id = Some(run_id);
         inner.last_state = None;
         inner.child = Some(child);
+        inner.capture_lock = Some(capture_lock);
         inner.started_at = now();
         inner.stop_at = None;
         inner.error = None;
@@ -704,7 +632,14 @@ impl Shared {
             .and_then(|mut inner| inner.child.take());
         if let Some(mut child) = child {
             signal_stop(&mut child);
+            for _ in 0..30 {
+                if child.try_wait().ok().flatten().is_some() { break; }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if child.try_wait().ok().flatten().is_none() { let _ = child.kill(); }
+            let _ = child.wait();
         }
+        if let Ok(mut inner) = self.inner.lock() { inner.capture_lock = None; }
     }
 
     pub fn install_certificate(&self) -> Result<(), String> {
@@ -727,6 +662,7 @@ impl Shared {
     }
 
     pub fn prepare_certificate(&self, app: &AppHandle) -> Result<(), String> {
+        let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
         let _guard = self
             .certificate_installation
             .try_lock()
@@ -878,80 +814,9 @@ fn current_capture_state(
         && state.started_at >= started_at - 1.0
 }
 
-fn capture_diagnostic(line: &str) -> Option<&'static str> {
-    let line = line.to_lowercase();
-    if line.contains("sml_error:state_write") {
-        return Some(
-            "Перехватчик не может записать состояние в каталог приложения. Проверьте владельца и права каталога данных Show My Limits.",
-        );
-    }
-    if line.contains("error in script") || line.contains("no module named") {
-        return Some(
-            "Не удалось загрузить обработчик лимитов. Переустановите Show My Limits и повторите запуск.",
-        );
-    }
-    if line.contains("sml_error:askpass_missing") {
-        return Some(
-            "Не найден zenity для графического запроса прав. Установите его: sudo apt install zenity.",
-        );
-    }
-    if [
-        "failed to elevate privileges",
-        "not running as root",
-        "a terminal is required",
-        "a password is required",
-        "no tty present",
-    ]
-    .iter()
-    .any(|message| line.contains(message))
-    {
-        Some(
-            "Не удалось получить права администратора для перехвата Linux. Установка сертификата не выдаёт эти права. Подтвердите запрос пароля для сетевого компонента или проверьте возможность использования sudo.",
-        )
-    } else if line.contains("address already in use") {
-        Some("Не удалось запустить перехватчик: сетевой адрес уже занят другим процессом.")
-    } else if line.contains("operation not permitted") || line.contains("permission denied") {
-        Some(
-            "ОС запретила запуск сетевого перехвата. Проверьте разрешения; установка сертификата сама по себе их не выдаёт.",
-        )
-    } else {
-        None
-    }
-}
-
-fn monitor_capture_output(
-    mut pipe: impl Read + Send + 'static,
-    issue: Arc<Mutex<Option<String>>>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let mut buffer = [0u8; 1024];
-        let mut line = Vec::with_capacity(4096);
-        loop {
-            let count = match pipe.read(&mut buffer) {
-                Ok(count) => count,
-                Err(_) => break,
-            };
-            for byte in buffer[..count]
-                .iter()
-                .copied()
-                .chain((count == 0).then_some(b'\n'))
-            {
-                if byte == b'\n' {
-                    if let Some(category) = capture_diagnostic(&String::from_utf8_lossy(&line)) {
-                        *issue.lock().unwrap_or_else(|p| p.into_inner()) = Some(category.into());
-                    }
-                    line.clear();
-                } else if line.len() < 4096 {
-                    line.push(byte);
-                }
-            }
-            if count == 0 {
-                break;
-            }
-        }
-        // Only fixed diagnostic categories survive; never persist raw helper output.
-    })
-}
+use crate::diagnostics::monitor_capture_output;
+#[cfg(test)]
+use crate::diagnostics::capture_diagnostic;
 
 fn helper_command(path: &Path) -> Command {
     #[allow(unused_mut)]
@@ -1154,6 +1019,7 @@ mod tests {
             },
             inner: Mutex::new(Inner {
                 settings: initial.clone(),
+                capture_lock: None,
                 child: Some(OwnedChild::spawn(Command::new("/bin/sleep").arg("30")).unwrap()),
                 stop_at: None,
                 started_at: now(),

@@ -23,3 +23,5 @@ __pycache__/
 /tools/mock-claude/dist/
 /tools/mock-claude/claude
 /tools/mock-claude/claude.exe
+
+/cli/target/

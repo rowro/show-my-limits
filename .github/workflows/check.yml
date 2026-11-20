@@ -26,3 +26,5 @@ jobs:
       - run: python -m unittest discover -s proxy -v
       - run: python -m unittest discover -s tests -p "test_proxy*.py" -v
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - run: cargo test --manifest-path cli/Cargo.toml --locked
+      - run: cargo run --manifest-path cli/Cargo.toml --locked -- --help

@@ -7,3 +7,6 @@ if (pkg.version !== conf.version || pkg.version !== version) throw new Error('Ve
 if (!conf.plugins?.updater?.pubkey) throw new Error('Updater public key is missing');
 if (!conf.plugins.updater.endpoints.every(url=>url.startsWith('https://github.com/rowro/show-my-limits/'))) throw new Error('Unexpected updater endpoint');
 console.log('Release configuration OK:',pkg.version);
+
+const cli=await readFile(new URL('../cli/Cargo.toml',import.meta.url),'utf8');
+if (cli.match(/^version = "([^"]+)"/m)?.[1] !== pkg.version) throw new Error('CLI version differs from the app');

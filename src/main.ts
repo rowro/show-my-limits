@@ -12,7 +12,7 @@ const devTools = !native && import.meta.env.DEV;
 const demo = !native && new URLSearchParams(location.search).has("demo");
 const root = document.querySelector<HTMLDivElement>("#app")!;
 let view: "overview" | "setup" | "settings" = "setup";
-let appVersion = "0.1.7";
+let appVersion = "0.2.0";
 type UpdateStatus = { phase: string; version: string | null; downloaded: number; total: number | null; error: string | null; manualInstall: boolean };
 let updateState: UpdateStatus = { phase: "idle", version: null, downloaded: 0, total: null, error: null, manualInstall: false };
 type GnomeStatus = { supported: boolean; pending: boolean; installed: boolean; active: boolean; message: string };
@@ -229,16 +229,21 @@ function connectionFields(s: Settings) {
     <fieldset><legend>Процессы</legend><p class="process-defaults">По умолчанию перехватываем <code>Claude</code> и <code>claude</code>.</p><label class="field-label" for="additional-processes">Дополнительные процессы</label><input type="text" id="additional-processes" name="additionalProcesses" value="${esc(s.additionalProcesses.join(", "))}" placeholder="Code, extensionHost" spellcheck="false"/><p class="field-help">Имена процессов через запятую, с учётом регистра. Например, для конкретного расширения IDE.</p></fieldset>`;
 }
 
+let settingsTab = "general";
+
 function settings() {
   const s = state.settings;
   return `<form id="settings-form"><div class="section-heading"><h2>Настройки</h2></div>
+    <div class="settings-tabs" role="tablist" aria-label="Разделы настроек">${[['general','Общие','system'],['capture','Захват','shield'],['updates','Обновления','clock']].map(([id,label,glyph]) => `<button type="button" id="tab-${id}" role="tab" data-settings-tab="${id}" aria-controls="settings-${id}" aria-selected="${settingsTab === id}" tabindex="${settingsTab === id ? 0 : -1}">${icon(glyph)}<span>${label}</span></button>`).join("")}</div>
+    <div id="settings-general" role="tabpanel" aria-labelledby="tab-general" ${settingsTab !== "general" ? "hidden" : ""}>
     <fieldset><legend>Оформление</legend><div class="theme-switch" role="group" aria-label="Тема">${([['system','Система'],['light','Светлая'],['dark','Тёмная']] as const).map(([value, label]) => `<button type="button" data-theme="${value}" class="${s.theme === value ? "selected" : ""}" aria-label="${label}" title="${label}" aria-pressed="${s.theme === value}">${icon(value)}</button>`).join("")}</div></fieldset>
     <fieldset><legend>Запуск</legend><label class="client-option"><input type="checkbox" id="launch-at-login" ${state.setup.launchAtLogin ? "checked" : ""} ${state.setup.launchAtLogin == null ? "disabled" : ""}/><span><strong>Запускать вместе с ОС</strong><small>В фоне, со значком в трее.</small></span></label><p class="field-help">${state.setup.launchAtLogin == null ? "Не удалось прочитать настройку автозапуска." : state.setup.platform === "macos" ? "Для автозапуска держи приложение в «Программах»." : "Настройка применяется сразу."}</p></fieldset>
     <section id="gnome-section"></section>
-    <section id="updates-section"></section>
+    </div><div id="settings-updates" role="tabpanel" aria-labelledby="tab-updates" ${settingsTab !== "updates" ? "hidden" : ""}><section id="updates-section"></section></div>
+    <div id="settings-capture" role="tabpanel" aria-labelledby="tab-capture" ${settingsTab !== "capture" ? "hidden" : ""}>
     <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p><details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Система» открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="${state.setup.platform === "windows" ? "install-certificate" : "open-certificate"}">${state.setup.platform === "windows" ? "Установить текущий сертификат" : "Открыть сертификат"}</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
     ${connectionFields({ ...s, ...(settingsDraft || {}) })}
-    <p class="field-help">Если изменить сервер или процессы, захват перезапустится при сохранении.</p></form>`;
+    <p class="field-help">Если изменить сервер или процессы, захват перезапустится при сохранении.</p></div></form>`;
 }
 
 function setupStepReady() {
@@ -388,6 +393,29 @@ root.addEventListener("click", async event => {
     try { if (native) await invoke("save_settings", { settings: next }); state.settings = next; applyTheme(theme); document.querySelectorAll("[data-theme]").forEach(el => { const selected = (el as HTMLElement).dataset.theme === theme; el.classList.toggle("selected", selected); el.setAttribute("aria-pressed", String(selected)); }); }
     catch (error) { toast = String(error); renderFooter(); }
   }
+});
+
+function selectSettingsTab(id: string, focus = false) {
+  settingsTab = id;
+  root.querySelectorAll<HTMLElement>("[data-settings-tab]").forEach(button => {
+    const selected = button.dataset.settingsTab === id;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (selected && focus) button.focus();
+  });
+  root.querySelectorAll<HTMLElement>('[role="tabpanel"]').forEach(panel => { panel.hidden = panel.id !== `settings-${id}`; });
+}
+root.addEventListener("click", event => {
+  const tab = (event.target as HTMLElement).closest<HTMLElement>("[data-settings-tab]");
+  if (tab) selectSettingsTab(tab.dataset.settingsTab!);
+});
+root.addEventListener("keydown", event => {
+  const tab = (event.target as HTMLElement).closest<HTMLElement>("[data-settings-tab]");
+  if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const ids = ["general", "capture", "updates"];
+  const index = ids.indexOf(tab.dataset.settingsTab!);
+  selectSettingsTab(ids[event.key === "Home" ? 0 : event.key === "End" ? 2 : (index + (event.key === "ArrowRight" ? 1 : 2)) % 3], true);
 });
 
 root.addEventListener("submit", async event => {

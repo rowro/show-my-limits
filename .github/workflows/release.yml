@@ -97,6 +97,25 @@ jobs:
           uploadUpdaterJson: false
           uploadUpdaterSignatures: true
           uploadWorkflowArtifacts: true
+      - name: Build terminal utility
+        run: cargo build --manifest-path cli/Cargo.toml --locked --release --target ${{ matrix.target }}
+      - name: Package terminal utility
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          VERSION=$(node -p 'require("./package.json").version')
+          mkdir -p cli-package
+          cp docs/CLI.md cli-package/README.md
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp cli/target/${{ matrix.target }}/release/sml.exe cli-package/
+          else
+            cp cli/target/${{ matrix.target }}/release/sml cli-package/
+          fi
+          python scripts/package-cli.py cli-package "sml_${VERSION}_${{ matrix.key }}.zip"
+          gh release upload "$RELEASE_TAG" "sml_${VERSION}_${{ matrix.key }}.zip" --clobber
       - name: GNOME session bridge smoke test
         if: runner.os == 'Linux'
         run: xvfb-run -a dbus-run-session -- python3 scripts/test-gnome-bridge.py src-tauri/target/${{ matrix.target }}/release/show-my-limits

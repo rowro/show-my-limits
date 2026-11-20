@@ -1,8 +1,10 @@
 mod capture_conflict;
 mod certificate;
+mod coordination;
 #[cfg(any(target_os = "linux", test))]
 mod desktop_state;
 mod engine;
+mod diagnostics;
 #[cfg(target_os = "linux")]
 mod gnome;
 mod installer;
@@ -12,6 +14,7 @@ mod linux_panel;
 mod macos_trust;
 mod process_tree;
 mod quota;
+mod settings;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 mod tray_image;
 mod updates;

@@ -2,7 +2,7 @@
 
 The public repository is `rowro/show-my-limits`. Run **Release builds** manually on the desired commit, or push a `vX.Y.Z` tag matching the versions in package.json, Cargo.toml, and tauri.conf.json. The workflow builds macOS arm64/Intel, Windows x64 and Linux x64/ARM64 using native GitHub runners.
 
-All outputs go to a **draft** GitHub Release. A final job assembles one complete `latest.json` only after all five target builds succeed. Test the installers before publishing the draft as a stable release. The app reads `https://github.com/rowro/show-my-limits/releases/latest/download/latest.json`; draft and prerelease builds are not delivered by that endpoint. Increment all three version fields before the next release.
+All outputs go to a **draft** GitHub Release. A final job assembles one complete `latest.json` only after all five target builds succeed. Test the installers before publishing the draft as a stable release. The app reads `https://github.com/rowro/show-my-limits/releases/latest/download/latest.json`; draft and prerelease builds are not delivered by that endpoint. Increment the GUI and CLI versions together before the next release. The same five runners also build standalone `sml` archives; they are not included in the GUI updater manifest.
 
 `TAURI_SIGNING_PRIVATE_KEY` in GitHub Actions Secrets signs updater packages. The public verification key is in tauri.conf.json. Keep a separate secure backup of the private key; losing it prevents updates to installations trusting that key. Never commit private keys, CA keys, settings, credentials or local state. The updater key is separate from Apple Developer ID and Windows Authenticode.
 

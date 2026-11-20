@@ -177,3 +177,9 @@ header { padding-bottom: 12px; }
   border-radius: 0;
   box-shadow: none;
 }
+
+.settings-tabs { display:flex; gap:4px; padding:3px; margin:0 0 16px; border-radius:8px; background:var(--track); }
+.settings-tabs button { display:flex; flex:1; gap:5px; align-items:center; justify-content:center; padding:7px 3px; border:0; border-radius:6px; background:transparent; color:var(--muted); font-size:10px; }
+.settings-tabs button[aria-selected="true"] { color:var(--ink); background:var(--card); box-shadow:var(--shadow); }
+.settings-tabs .icon { width:13px; height:13px; }
+[role="tabpanel"][hidden] { display:none; }

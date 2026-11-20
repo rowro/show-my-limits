@@ -41,7 +41,7 @@ impl Profile {
             return "—".into();
         }
         match self.windows.get(period).and_then(|w| w.remaining(now)) {
-            Some(value) => format!("{}%", (value * 100.0).ceil() as u32),
+            Some(value) => format!("{}%", (value * 100.0 - 1e-9).ceil() as u32),
             None => "—".into(),
         }
     }
@@ -90,6 +90,10 @@ mod tests {
             overage_reason: None,
         };
         assert_eq!(profile.title(1001.0), "25%");
+        let rounding = Window { utilization: Some(0.42), ..Window::default() };
+        profile.windows.insert("7d".into(), rounding);
+        assert_eq!(profile.window_title("7d", 1001.0), "58%");
+        profile.windows.remove("7d");
         assert_eq!(profile.window_title("7d", 1001.0), "—");
         profile.windows.insert("7d".into(), Window { utilization: Some(0.10), ..Window::default() });
         assert_eq!(profile.window_title("7d", 1001.0), "90%");

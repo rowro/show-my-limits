@@ -107,7 +107,9 @@ mod tests {
         let store = unsafe { CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, 0, ptr::null()) };
         assert!(!store.is_null());
         let store = Store(store);
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test-ca.pem");
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        fs::write(fixture.path(), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        let path = fixture.path();
         let der = der(&path).unwrap();
         assert!(!contains(&store, &der));
         assert_ne!(
