@@ -25,3 +25,5 @@ __pycache__/
 /tools/mock-claude/claude.exe
 
 /cli/target/
+
+/tools/release-verifier/target/

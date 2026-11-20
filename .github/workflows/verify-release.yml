@@ -1,0 +1,28 @@
+name: Verify release artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft or published release tag
+        required: true
+        default: v0.2.0
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Download complete updater payloads
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          mkdir review
+          gh release download "$RELEASE_TAG" --pattern '*.app.tar.gz' --pattern '*.AppImage' --pattern '*setup.exe' --pattern latest.json --dir review
+      - name: Verify signatures and reject modified payloads
+        run: cargo run --locked --manifest-path tools/release-verifier/Cargo.toml -- src-tauri/tauri.conf.json review/latest.json review

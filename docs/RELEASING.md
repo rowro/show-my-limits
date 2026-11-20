@@ -15,3 +15,5 @@ mitmproxy is not bundled into the application. The wizard installs a pinned offi
 macOS builds are ad-hoc signed without Apple notarization until a Developer ID is provided. This does not disable TLS or Gatekeeper. Windows builds are unsigned with respect to Authenticode. Linux local capture requires a supported kernel and privilege handling; verify this on a clean machine.
 
 Before publication, smoke-test first installation, CA trust, capture start/stop, quota receipt, app quit, and an update from the preceding version on every supported OS. A successful build is not proof of capture permissions or certificate trust.
+
+Before publication, run **Verify release artifacts** with the draft tag. It downloads all five updater payloads on a runner and verifies their signatures using the application public key and the same minisign library as Tauri; a modified payload must fail verification. This checks artifact authenticity, not installer permissions or an end-to-end update.
