@@ -218,14 +218,14 @@ function setup() {
     ${identity}
     ${state.setup.platform === "macos" ? `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}</details>` : `<div class="trust-guide">${trust}</div>${state.setup.platform === "windows" ? `<button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}Открыть сертификат</button>` : ""}<button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}`}
     <p class="subtle">Получение нового ответа Claude подтвердит, что клиент доверяет сертификату.</p></div></section>`,
-    `<section class="setup-step"><span class="step-number ${configured ? "done" : ""}">${configured ? icon("check") : "4"}</span><div><h3>Сервер и процессы <span class="pill ${configured ? "good" : ""}">${configured ? "Выбраны" : "Не выбраны"}</span></h3><form id="setup-form">${connectionFields({ ...state.settings, ...(setupDraft || {}) })}</form></div></section>`
+    `<section class="setup-step"><span class="step-number ${configured ? "done" : ""}">${configured ? icon("check") : "4"}</span><div><h3>Сервер и процессы <span class="pill ${configured ? "good" : ""}">${configured ? "Выбраны" : "Не выбраны"}</span></h3><form id="setup-form">${connectionFields({ ...state.settings, ...(setupDraft || {}) }, !setupDraft)}</form></div></section>`
   ];
   return `<div class="wizard-heading"><span class="wizard-caption">Подключение · шаг ${setupStep + 1} из 4</span><div class="wizard-progress" aria-label="Шаг ${setupStep + 1} из 4">${steps.map((_, i) => `<i class="${i <= setupStep ? "active" : ""}"></i>`).join("")}</div></div>${steps[setupStep]}`;
 
 }
 
-function connectionFields(s: Settings) {
-  return `<fieldset><legend><label for="server">Сервер</label></legend><input type="text" id="server" name="hosts" value="${esc(s.hosts[0] || "")}" spellcheck="false" placeholder="api.anthropic.com"/><p class="field-help">Домен или URL. Путь запросов может быть любым.</p></fieldset>
+function connectionFields(s: Settings, suggestDefault = false) {
+  return `<fieldset><legend><label for="server">Сервер</label></legend><input type="text" id="server" name="hosts" value="${esc(s.hosts[0] || (suggestDefault ? "api.anthropic.com" : ""))}" spellcheck="false" placeholder="api.anthropic.com"/><p class="field-help">Домен или URL. Путь запросов может быть любым.</p></fieldset>
     <fieldset><legend>Процессы</legend><p class="process-defaults">По умолчанию перехватываем <code>Claude</code> и <code>claude</code>.</p><label class="field-label" for="additional-processes">Дополнительные процессы</label><input type="text" id="additional-processes" name="additionalProcesses" value="${esc(s.additionalProcesses.join(", "))}" placeholder="Code, extensionHost" spellcheck="false"/><p class="field-help">Имена процессов через запятую, с учётом регистра. Например, для конкретного расширения IDE.</p></fieldset>`;
 }
 
@@ -360,6 +360,12 @@ async function action(name: string) {
     if (name === "open-certificate") await invoke("open_certificate");
     if (name === "reveal-certificate") await invoke("reveal_certificate");
     await refresh();
+    // Successful setup actions already establish the next prerequisite.
+    if (view === "setup" && ((name === "install-helper" && setupStep === 0 && state.setup.helperPath)
+      || (name === "certificate" && setupStep === 1 && state.setup.certificateExists)
+      || (name === "install-certificate" && setupStep === 2 && certificateTrusted(state)))) {
+      setupStep = Math.min(3, setupStep + 1);
+    }
     if (view === "setup") render();
   } catch (error) { toast = String(error); }
   finally { busy = false; pendingAction = ""; if (view === "setup") render(); else renderFooter(); }

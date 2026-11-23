@@ -183,3 +183,26 @@ header { padding-bottom: 12px; }
 .settings-tabs button[aria-selected="true"] { color:var(--ink); background:var(--card); box-shadow:var(--shadow); }
 .settings-tabs .icon { width:13px; height:13px; }
 [role="tabpanel"][hidden] { display:none; }
+
+/* Setup is read on a compact native panel, including high density displays. */
+.wizard-content .wizard-caption { font-size: 12px; }
+.wizard-content .setup-step h3 { font-size: 16px; line-height: 1.35; }
+.wizard-content .setup-step p,
+.wizard-content .setup-step p.subtle,
+.wizard-content .trust-guide,
+.wizard-content .trust-steps,
+.wizard-content .field-help,
+.wizard-content .process-defaults,
+.wizard-content .field-label,
+.wizard-content summary { font-size: 12px; line-height: 1.5; }
+.wizard-content .pill { font-size: 10px; vertical-align: middle; }
+.wizard-content legend,
+.wizard-content .client-option strong { font-size: 13px; }
+.wizard-content input { font-size: 13px; }
+.wizard-content .fingerprint { font-size: 11px; }
+.wizard-nav .primary,
+.wizard-nav .secondary,
+.wizard-content button { font-size: 13px; min-height: 36px; }
+.wizard-nav button { min-width: 108px; }
+:root:has(.wizard-content) .header-status .capture-status,
+:root:has(.wizard-content) .header-status .capture-button { font-size: 11px; }

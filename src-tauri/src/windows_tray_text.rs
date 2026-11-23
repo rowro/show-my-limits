@@ -33,6 +33,21 @@ pub fn render(values: &[String; 2], light: bool, width: usize, height: usize) ->
     Some(surface)
 }
 
+pub fn render_vertical(values: &[String; 2], light: bool, width: usize, height: usize) -> Option<Vec<u8>> {
+    if width < 20 || height < 32 { return None; }
+    let rows = ["5h", values[0].as_str(), "7d", values[1].as_str()];
+    let mut surface = Vec::with_capacity(width * height * 4);
+    for (index, label) in rows.into_iter().enumerate() {
+        let row_height = height / 4 + usize::from(index < height % 4);
+        let font_height = row_height * OVERSAMPLE * if index % 2 == 0 { 2 } else { 3 } / 4;
+        surface.extend(render_text(label, light, width, row_height, font_height, true)?);
+    }
+    for pixel in surface.chunks_exact_mut(4) {
+        pixel[3] = pixel[3].max(1);
+    }
+    Some(surface)
+}
+
 fn render_text(
     title: &str, light: bool, width: usize, height: usize, font_height: usize, pad_left: bool,
 ) -> Option<Vec<u8>> {
@@ -167,6 +182,19 @@ mod tests {
                 for band in [0..height / 2, height / 2..height] {
                     assert!(band.into_iter().any(|y| (0..width).any(|x| alpha(x, y) >= 128)));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn vertical_taskbar_values_and_labels_remain_visible() {
+        for (width, height) in [(44, 80), (60, 120)] {
+            let pixels = render_vertical(&["100%".into(), "65%".into()], false, width, height).unwrap();
+            let alpha = |x: usize, y: usize| pixels[(y * width + x) * 4 + 3];
+            for row in 0..4 {
+                let start = row * (height / 4);
+                let end = (row + 1) * (height / 4);
+                assert!((start..end).any(|y| (0..width).any(|x| alpha(x, y) >= 128)));
             }
         }
     }

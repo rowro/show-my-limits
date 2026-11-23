@@ -266,7 +266,7 @@ fn taskbar_placement(controls: &TaskbarControls) -> Result<(HWND, Placement), &'
             return Err("window rectangles unavailable");
         }
         let mut placement = layout(bar_rect, tray_rect, GetDpiForWindow(taskbar), &controls.bounds)
-            .ok_or("the taskbar has no space to the left of the notification area")?;
+            .ok_or("the taskbar has no space beside the notification area")?;
         let mut origin = POINT { x: placement.x, y: placement.y };
         MapWindowPoints(null_mut(), taskbar, &mut origin, 1);
         placement.x = origin.x;
@@ -287,19 +287,41 @@ fn debug_once(stage: &'static str, reason: impl std::fmt::Display) {
 }
 
 fn layout(bar: RECT, tray: RECT, dpi: u32, occupied: &[RECT]) -> Option<Placement> {
+    let bar_width = bar.right - bar.left;
     let bar_height = bar.bottom - bar.top;
-    if bar_height < 3 || bar.right - bar.left <= bar_height || dpi == 0
-        || tray.left <= bar.left || tray.left >= bar.right || tray.bottom <= bar.top
-        || tray.top >= bar.bottom {
+    if bar_width < 3 || bar_height < 3 || dpi == 0
+        || tray.right <= bar.left || tray.left >= bar.right
+        || tray.bottom <= bar.top || tray.top >= bar.bottom {
         return None;
     }
     let scaled = |logical: i32| (logical * dpi as i32 + 48) / 96;
+    let gap = scaled(4);
+    if bar_height > bar_width {
+        // On a side taskbar, stack labels and values above the tray.
+        let width = scaled(76).min(bar_width - 2 * gap);
+        let height = scaled(80);
+        if width < scaled(36) || height + gap > bar_height { return None; }
+        let x = bar.left + (bar_width - width) / 2;
+        let mut bottom = tray.top - gap;
+        while bottom - height >= bar.top {
+            let y = bottom - height;
+            let collision = occupied.iter().filter(|rect| {
+                rect.left < x + width && rect.right > x
+                    && rect.top < bottom + gap && rect.bottom + gap > y
+            }).map(|rect| rect.top - gap).min();
+            match collision {
+                Some(next_bottom) => bottom = next_bottom,
+                None => return Some(Placement { x, y, width, height }),
+            }
+        }
+        return None;
+    }
+    if tray.left <= bar.left || tray.left >= bar.right { return None; }
     if bar_height < scaled(30) {
         return None;
     }
     let width = scaled(76);
     let height = scaled(40).min(bar_height);
-    let gap = scaled(4);
     let y = bar.top + (bar_height - height) / 2;
     let mut right = tray.left - gap;
     while right - width >= bar.left {
@@ -412,7 +434,12 @@ fn taskbar_uses_light_theme() -> bool {
 
 fn present(window: HWND, placement: Placement, values: &[String; 2], light: bool) -> bool {
     let (width, height) = (placement.width, placement.height);
-    let Some(pixels) = windows_tray_text::render(values, light, width as usize, height as usize) else {
+    let pixels = if height > width {
+        windows_tray_text::render_vertical(values, light, width as usize, height as usize)
+    } else {
+        windows_tray_text::render(values, light, width as usize, height as usize)
+    };
+    let Some(pixels) = pixels else {
         #[cfg(debug_assertions)]
         debug_once("drawing the text", "no glyphs were rendered");
         return false;
@@ -492,5 +519,17 @@ mod tests {
 
         let crowded = RECT { left: 1520, ..bar };
         assert_eq!(layout(crowded, tray, 144, &[weather]), None);
+    }
+
+    #[test]
+    fn side_taskbar_places_indicator_above_tray_and_weather() {
+        let bar = RECT { left: 672, top: 0, right: 724, bottom: 792 };
+        let tray = RECT { left: 672, top: 622, right: 724, bottom: 792 };
+        let weather = RECT { left: 678, top: 552, right: 720, bottom: 590 };
+        assert_eq!(layout(bar, tray, 96, &[weather]), Some(Placement {
+            x: 676, y: 468, width: 44, height: 80,
+        }));
+        let crowded = RECT { top: 500, ..bar };
+        assert_eq!(layout(crowded, tray, 96, &[weather]), None);
     }
 }
