@@ -162,7 +162,11 @@ header { padding-bottom: 12px; }
 .process-defaults { font-size: 10px; line-height: 1.6; color: var(--muted); }
 .process-defaults code { color: var(--ink); font-size: 10px; }
 
-.update-button { margin-top: 8px; }
+.footer-bottom { gap: 8px; }
+.footer-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.footer-update { font-size: 10px; white-space: nowrap; }
+.footer-update.available { color: var(--accent); font-weight: 600; }
+.footer-bottom > .text-button { flex-shrink: 0; }
 
 /* Linux tray protocols may not provide an anchor; move the panel by its brand. */
 :root[data-platform="linux"] .brand { cursor: grab; user-select: none; }

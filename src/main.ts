@@ -24,6 +24,7 @@ let settingsDraft: { hosts: string[]; additionalProcesses: string[] } | null = n
 let busy = false;
 let pendingAction = "";
 let toast: string | null = null;
+let setupError: string | null = null;
 let pointerActive = false;
 const deferredRenders = new Set<() => void>();
 function deferDuringPointer(render: () => void): boolean {
@@ -201,6 +202,7 @@ function setup() {
   const configured = state.settings.hosts.length > 0;
   const installation = state.setup.installation;
   const installing = ["downloading", "verifying", "extracting"].includes(installation.phase);
+  const showManualHelper = !busy && (!state.setup.installSupported || !!setupError || !!installation.error);
   const progress = installation.phase === "verifying" ? "Проверяем загрузку…" : installation.phase === "extracting" ? "Устанавливаем…" : installation.total ? `Загружаем ${Math.floor(installation.downloaded / installation.total * 100)}%` : "Загружаем…";
   const name = state.setup.certificateName;
   const certificateFile = state.setup.certificatePath.split(/[\\/]/).pop() || "mitmproxy-ca-cert.cer";
@@ -214,7 +216,7 @@ function setup() {
     ? `<div class="trust-guide">${trust}</div><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}`
     : `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button></details>`;
   const steps = [
-    `<section class="setup-step"><span class="step-number">1</span><div><h3>Подготовка</h3><p>${!helper ? installing ? progress : busy ? "Ищем mitmproxy и готовим загрузку…" : toast ? "Подготовка остановлена." : "Ищем mitmproxy…" : !ready ? busy ? "Создаём локальный сертификат…" : "Сертификат ещё не создан." : "Перехватчик и сертификат готовы."}</p><p class="field-help">Приложение само найдёт mitmdump или загрузит проверенную версию и создаст отдельный локальный сертификат.</p>${!busy && (!helper || !ready) ? `<button class="secondary" data-action="prepare-setup">Повторить подготовку</button>` : ""}${!state.setup.installSupported && !helper ? '<p class="field-help">Для этой архитектуры укажи установленный mitmdump вручную.</p>' : ""}<details><summary>Указать свой mitmdump</summary><form id="helper-form"><input name="helperPath" aria-label="Путь к mitmdump" placeholder="Путь к mitmdump" ${busy ? "disabled" : ""}/><button class="secondary setup-link" type="submit" ${busy ? "disabled" : ""}>Использовать</button></form></details>${helper ? `<details class="helper-location"><summary>Где установлен</summary><p class="helper-path">${esc(state.setup.helperPath)}</p></details>` : ""}</div></section>`,
+    `<section class="setup-step"><span class="step-number">1</span><div><h3>Подготовка</h3><p>${!helper ? installing ? progress : busy ? "Ищем mitmproxy и готовим загрузку…" : setupError ? "Подготовка остановлена." : "Ищем mitmproxy…" : !ready ? busy ? "Создаём локальный сертификат…" : "Сертификат ещё не создан." : "Перехватчик и сертификат готовы."}</p><p class="field-help">Приложение само найдёт mitmdump или загрузит проверенную версию и создаст отдельный локальный сертификат.</p>${!busy && (!helper || !ready) ? `<button class="secondary" data-action="prepare-setup">Повторить подготовку</button>` : ""}${!state.setup.installSupported && !helper ? '<p class="field-help">Для этой архитектуры укажи установленный mitmdump вручную.</p>' : ""}${showManualHelper ? `<details><summary>Указать свой mitmdump</summary><form id="helper-form"><input name="helperPath" aria-label="Путь к mitmdump" placeholder="Путь к mitmdump"/><button class="secondary setup-link" type="submit">Использовать</button></form></details>` : ""}${helper ? `<details class="helper-location"><summary>Где установлен</summary><p class="helper-path">${esc(state.setup.helperPath)}</p></details>` : ""}</div></section>`,
     `<section class="setup-step"><span class="step-number ${trusted ? "done" : ""}">${trusted ? icon("check") : "2"}</span><div><h3>Доверие сертификату <span class="pill ${trusted ? "good" : ""}">${trusted ? "Готово" : "Нужна установка"}</span></h3>
     ${state.setup.platform === "macos" ? `<p>${trusted ? "Доверие настроено. После включения перехватчика полностью выйди из Claude через ⌘Q и открой его заново." : "Добавим сертификат в связку «Система» и настроим доверие для HTTPS. macOS может запросить два подтверждения: для импорта и для доверия. Пароль вводится в системных окнах."}</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${busy && pendingAction === "install-certificate" ? "Ожидаем разрешения…" : trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
     ${state.setup.platform === "windows" ? `<p>Установим текущий сертификат в доверенные корневые центры текущего пользователя Windows.</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
@@ -260,9 +262,8 @@ function renderUpdates() {
   if (deferDuringPointer(renderUpdates)) return;
   const section=document.querySelector("#updates-section"); if (!section) return;
   const phase=updateState.phase;
-  const working=["checking", "downloading", "installing"].includes(phase);
   const text=phase === "checking" ? "Проверяем…" : phase === "downloading" ? `Загружаем${updateState.total ? ` ${Math.floor(updateState.downloaded / updateState.total * 100)}%` : "…"}` : phase === "installing" ? "Устанавливаем…" : phase === "available" ? `Доступна версия ${updateState.version}` : phase === "current" ? "Установлена актуальная версия" : phase === "unpublished" ? "Обновления пока не опубликованы" : phase === "error" ? updateState.error : "Новые версии из GitHub Releases";
-  setMarkupIfChanged(section, `<fieldset><legend>Обновления</legend><p class="field-help">${esc(text)}</p>${phase === "available" ? `<button type="button" class="secondary update-button" data-action="${updateState.manualInstall ? "open-releases" : "install-update"}">${updateState.manualInstall ? "Скачать пакет" : "Установить и перезапустить"}</button>` : `<button type="button" class="secondary update-button" data-action="check-update" ${working ? "disabled" : ""}>Проверить обновления</button>`}</fieldset>`);
+  setMarkupIfChanged(section, `<fieldset><legend>Обновления</legend><p class="field-help">${esc(text)}</p></fieldset>`);
 }
 function renderFooter() {
   if (deferDuringPointer(renderFooter)) return;
@@ -273,7 +274,13 @@ function renderFooter() {
   setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
   const wizardNav = view === "setup" && setupStep === 2 ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy ? "disabled" : ""}>Назад</button><button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Подключаем…" : "Подключить"}</button></div>` : "";
   setMarkupIfChanged(document.querySelector("#screen-actions")!, `${wizardNav}${view === "settings" ? `<button class="primary screen-save" type="submit" form="settings-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Сохранить"}</button>` : ""}`);
-  setMarkupIfChanged(document.querySelector("#footer")!, `<div class="footer-bottom"><span class="version">${esc(appVersion)}</span><button class="text-button" data-action="quit">Выйти</button></div>`);
+  const updatePhase = updateState.phase;
+  const updateWorking = ["checking", "downloading", "installing"].includes(updatePhase);
+  const updateAvailable = updatePhase === "available";
+  const updateAction = updateAvailable ? updateState.manualInstall ? "open-releases" : "install-update" : "check-update";
+  const updateLabel = updatePhase === "checking" ? "Проверяем…" : updatePhase === "downloading" ? `Загружаем${updateState.total ? ` ${Math.floor(updateState.downloaded / updateState.total * 100)}%` : "…"}` : updatePhase === "installing" ? "Устанавливаем…" : updateAvailable ? "Доступно обновление" : "Проверить обновления";
+  const updateTitle = updateAvailable ? `${updateState.manualInstall ? "Скачать" : "Установить"} версию ${updateState.version || ""}` : updateLabel;
+  setMarkupIfChanged(document.querySelector("#footer")!, `<div class="footer-bottom"><div class="footer-left"><span class="version">${esc(appVersion)}</span><button class="text-button footer-update ${updateAvailable ? "available" : ""}" data-action="${updateAction}" title="${esc(updateTitle)}" aria-label="${esc(updateTitle)}" ${updateWorking ? "disabled" : ""}>${esc(updateLabel)}</button></div><button class="text-button" data-action="quit">Выйти</button></div>`);
   const message = toast || state.setup.certificateTrustError || (!state.setup.helperPath && state.setup.installation.error) || state.capture.error || state.connectionIssue;
   const notice = document.querySelector("#notice")!;
   setMarkupIfChanged(notice, message ? `<div class="notice">${icon("warning")}<span>${esc(message)}</span><button class="icon-button" data-action="dismiss" aria-label="Закрыть сообщение">${icon("close")}</button></div>` : "");
@@ -306,7 +313,7 @@ async function finishSetup() {
 
 async function prepareSetup() {
   if (busy || (state.setup.helperPath && state.setup.certificateExists)) return;
-  busy = true; pendingAction = "prepare-setup"; toast = null; render();
+  busy = true; pendingAction = "prepare-setup"; setupError = null; toast = null; render();
   try {
     if (!native) {
       state.setup.helperPath ||= "/preview/mitmdump";
@@ -325,7 +332,7 @@ async function prepareSetup() {
       }
     }
     setupStep = requiredSetupStep();
-  } catch (error) { toast = String(error); }
+  } catch (error) { setupError = String(error); toast = setupError; }
   finally { busy = false; pendingAction = ""; render(); }
 }
 
@@ -342,13 +349,14 @@ async function action(name: string) {
     return;
   }
   if (["check-update", "install-update", "open-releases"].includes(name)) {
-    if (!native) { updateState.phase=name === "check-update" ? "current" : "idle"; renderUpdates(); return; }
+    if (!native) { updateState.phase=name === "check-update" ? "current" : "idle"; renderFooter(); return; }
+    toast = null;
     try {
       if (name === "check-update") updateState=await invoke<UpdateStatus>("check_update");
       if (name === "install-update") await invoke("install_update");
       if (name === "open-releases") await invoke("open_releases");
-    } catch (error) { updateState.phase="error"; updateState.error=String(error); }
-    renderUpdates(); return;
+    } catch (error) { updateState.phase="error"; updateState.error=String(error); toast=String(error); }
+    renderFooter(); return;
   }
   if (name === "dismiss") { toast = null; state.capture.error = null; state.connectionIssue = null; renderFooter(); return; }
   if (name === "prepare-setup") { await prepareSetup(); return; }
@@ -496,7 +504,7 @@ root.addEventListener("change", async event => {
 
 const devScenes = [
   ["limits", "Лимиты"], ["low", "Лимиты заканчиваются"], ["exhausted", "Лимит исчерпан"], ["stale", "Устаревшие данные"],
-  ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["stopped", "Перехват выключен"], ["settings", "Настройки"],
+  ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["stopped", "Перехват выключен"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
   ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Доверие"], ["setup-2", "3 · Сервер и процессы"],
 ];
 function setDevScene(scene: string) {
@@ -504,10 +512,13 @@ function setDevScene(scene: string) {
   if (!devScenes.some(([id]) => id === scene)) scene = "limits";
   const theme = state.settings.theme;
   state = demoStatus(); state.settings.theme = theme;
+  updateState = scene === "update-available"
+    ? { phase: "available", version: "0.2.1", downloaded: 0, total: null, error: null, manualInstall: false }
+    : { phase: "idle", version: null, downloaded: 0, total: null, error: null, manualInstall: false };
   const platform = new URLSearchParams(location.search).get("platform");
   if (["linux", "windows", "macos"].includes(platform || "")) state.setup.platform = platform!;
   if (state.setup.platform === "linux") state.setup.certificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates/mitmproxy-ca-cert.cer";
-  setupDraft = null; settingsDraft = null; toast = null; busy = false; pendingAction = "";
+  setupDraft = null; settingsDraft = null; toast = null; setupError = null; busy = false; pendingAction = "";
   view = scene === "settings" ? "settings" : "overview";
   if (scene === "trust-lost") state.setup.certificateTrusted = false;
   if (scene === "low" || scene === "exhausted") {
@@ -580,7 +591,7 @@ void document.fonts.ready.then(schedulePanelSize);
 if (native) {
   appVersion=await getVersion();
   updateState=await invoke<UpdateStatus>("update_status");
-  await listen<UpdateStatus>("show-my-limits://update", event => { updateState=event.payload; renderUpdates(); });
+  await listen<UpdateStatus>("show-my-limits://update", event => { updateState=event.payload; renderFooter(); });
   await refresh();
   if (needsSetup(state) && requiredSetupStep() === 0) void prepareSetup();
   if (state.setup.platform === "linux") {
