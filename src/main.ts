@@ -12,7 +12,7 @@ const devTools = !native && import.meta.env.DEV;
 const demo = !native && new URLSearchParams(location.search).has("demo");
 const root = document.querySelector<HTMLDivElement>("#app")!;
 let view: "overview" | "setup" | "settings" = "setup";
-let appVersion = "0.2.0";
+let appVersion = "0.2.1";
 type UpdateStatus = { phase: string; version: string | null; downloaded: number; total: number | null; error: string | null; manualInstall: boolean };
 let updateState: UpdateStatus = { phase: "idle", version: null, downloaded: 0, total: null, error: null, manualInstall: false };
 type GnomeStatus = { supported: boolean; pending: boolean; installed: boolean; active: boolean; message: string };
@@ -513,7 +513,7 @@ function setDevScene(scene: string) {
   const theme = state.settings.theme;
   state = demoStatus(); state.settings.theme = theme;
   updateState = scene === "update-available"
-    ? { phase: "available", version: "0.2.1", downloaded: 0, total: null, error: null, manualInstall: false }
+    ? { phase: "available", version: "0.2.2", downloaded: 0, total: null, error: null, manualInstall: false }
     : { phase: "idle", version: null, downloaded: 0, total: null, error: null, manualInstall: false };
   const platform = new URLSearchParams(location.search).get("platform");
   if (["linux", "windows", "macos"].includes(platform || "")) state.setup.platform = platform!;
