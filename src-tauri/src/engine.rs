@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
@@ -789,14 +790,23 @@ fn compatible_external_helper(path: &Path) -> bool {
 }
 
 fn probe_helper_version(path: &Path) -> bool {
-    let Ok(mut child) = Command::new(path).arg("--version")
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return false; };
+    let Ok(mut output) = tempfile::tempfile() else { return false; };
+    let Ok(stdout) = output.try_clone() else { return false; };
+    let Ok(stderr) = output.try_clone() else { return false; };
+    let mut command = Command::new(path);
+    command.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    let Ok(mut child) = OwnedChild::spawn(&mut command) else { return false; };
     for _ in 0..100 {
-        if child.try_wait().ok().flatten().is_some() {
-            return child.wait_with_output().ok().is_some_and(|output| {
-                output.status.success() && (helper_version_matches(&output.stdout)
-                    || helper_version_matches(&output.stderr))
-            });
+        if let Ok(Some(status)) = child.try_wait() {
+            drop(child);
+            let mut bytes = Vec::new();
+            return status.success()
+                && output.seek(SeekFrom::Start(0)).is_ok()
+                && output.take(64 * 1024).read_to_end(&mut bytes).is_ok()
+                && helper_version_matches(&bytes);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
