@@ -37,8 +37,21 @@ pub fn render_vertical(values: &[String; 2], light: bool, width: usize, height: 
     if width < 20 || height < 32 { return None; }
     let rows = ["5h", values[0].as_str(), "7d", values[1].as_str()];
     let mut surface = Vec::with_capacity(width * height * 4);
+    let divider_padding = height / 20;
+    let divider_height = 2 * divider_padding + 1;
+    let text_height = height - divider_height;
+    let inset = width / 6;
+    let channel = if light { 8 } else { 83 };
     for (index, label) in rows.into_iter().enumerate() {
-        let row_height = height / 4 + usize::from(index < height % 4);
+        if index == 2 {
+            let start = surface.len() + (divider_padding * width + inset) * 4;
+            let end = start + (width - 2 * inset) * 4;
+            surface.resize(surface.len() + divider_height * width * 4, 0);
+            for pixel in surface[start..end].chunks_exact_mut(4) {
+                pixel.copy_from_slice(&[channel, channel, channel, 85]);
+            }
+        }
+        let row_height = text_height / 4 + usize::from(index < text_height % 4);
         let font_height = row_height * OVERSAMPLE * if index % 2 == 0 { 2 } else { 3 } / 4;
         surface.extend(render_text(label, light, width, row_height, font_height, true)?);
     }
@@ -188,13 +201,29 @@ mod tests {
 
     #[test]
     fn vertical_taskbar_values_and_labels_remain_visible() {
-        for (width, height) in [(44, 80), (60, 120)] {
+        for (width, height) in [(44, 88), (81, 132)] {
             let pixels = render_vertical(&["100%".into(), "65%".into()], false, width, height).unwrap();
             let alpha = |x: usize, y: usize| pixels[(y * width + x) * 4 + 3];
             for row in 0..4 {
                 let start = row * (height / 4);
                 let end = (row + 1) * (height / 4);
                 assert!((start..end).any(|y| (0..width).any(|x| alpha(x, y) >= 128)));
+            }
+            for light in [false, true] {
+                let pixels = render_vertical(&["100%".into(), "65%".into()], light, width, height).unwrap();
+                let midpoint = height / 2 * width * 4;
+                let row = &pixels[midpoint..midpoint + width * 4];
+                let channel = if light { 8 } else { 83 };
+                assert_eq!(&row[..4], &[0, 0, 0, 1]);
+                let center = (width / 2) * 4;
+                assert_eq!(&row[center..center + 4], &[channel, channel, channel, 85]);
+                assert_eq!(&row[(width - 1) * 4..], &[0, 0, 0, 1]);
+                for offset in 1..=height / 20 {
+                    for y in [height / 2 - offset, height / 2 + offset] {
+                        let row = &pixels[y * width * 4..(y + 1) * width * 4];
+                        assert!(row.chunks_exact(4).all(|pixel| pixel[3] == 1));
+                    }
+                }
             }
         }
     }

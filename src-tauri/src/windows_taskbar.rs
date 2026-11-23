@@ -8,6 +8,7 @@ use windows::Win32::{
     UI::Accessibility::{
         AutomationElementMode_None, CUIAutomation8, IUIAutomation2, TreeScope_Descendants,
         UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
+        UIA_ClassNamePropertyId,
         UIA_ControlTypePropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
         UIA_ProcessIdPropertyId,
     },
@@ -117,6 +118,7 @@ fn control_bounds(taskbar: HWND) -> windows::core::Result<Vec<RECT>> {
         let cache = automation.CreateCacheRequest()?;
         cache.SetAutomationElementMode(AutomationElementMode_None)?;
         cache.AddProperty(UIA_BoundingRectanglePropertyId)?;
+        cache.AddProperty(UIA_ClassNamePropertyId)?;
         cache.AddProperty(UIA_IsOffscreenPropertyId)?;
         cache.AddProperty(UIA_ProcessIdPropertyId)?;
         let root = automation.ElementFromHandle(windows::Win32::Foundation::HWND(taskbar))?;
@@ -126,6 +128,11 @@ fn control_bounds(taskbar: HWND) -> windows::core::Result<Vec<RECT>> {
         for index in 0..controls.Length()? {
             let control = controls.GetElement(index)?;
             if control.CachedProcessId()? != own_pid && !control.CachedIsOffscreen()?.as_bool() {
+                // The classic task list is focusable even across its blank area.
+                // Its individual task buttons are returned as descendants.
+                if control.CachedClassName()?.to_string() == "MSTaskListWClass" {
+                    continue;
+                }
                 let rect = control.CachedBoundingRectangle()?;
                 if rect.right > rect.left && rect.bottom > rect.top {
                     bounds.push(RECT {
@@ -299,7 +306,7 @@ fn layout(bar: RECT, tray: RECT, dpi: u32, occupied: &[RECT]) -> Option<Placemen
     if bar_height > bar_width {
         // On a side taskbar, stack labels and values above the tray.
         let width = scaled(76).min(bar_width - 2 * gap);
-        let height = scaled(80);
+        let height = scaled(88);
         if width < scaled(36) || height + gap > bar_height { return None; }
         let x = bar.left + (bar_width - width) / 2;
         let mut bottom = tray.top - gap;
@@ -527,7 +534,7 @@ mod tests {
         let tray = RECT { left: 672, top: 622, right: 724, bottom: 792 };
         let weather = RECT { left: 678, top: 552, right: 720, bottom: 590 };
         assert_eq!(layout(bar, tray, 96, &[weather]), Some(Placement {
-            x: 676, y: 468, width: 44, height: 80,
+            x: 676, y: 460, width: 44, height: 88,
         }));
         let crowded = RECT { top: 500, ..bar };
         assert_eq!(layout(crowded, tray, 96, &[weather]), None);
