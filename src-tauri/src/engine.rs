@@ -3,12 +3,12 @@ use crate::process_tree::OwnedChild;
 use crate::quota::{Profile, ProxyState};
 use serde::Serialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -184,7 +184,12 @@ impl Shared {
                     .join(executable),
             ]);
         }
-        candidates.into_iter().find(|p| p.is_file())
+        // Preserve a path deliberately chosen by an existing user. For a new
+        // setup, only reuse a discovered external helper if it is the pinned
+        // version and can actually start; otherwise install our verified copy.
+        let configured = !settings.helper_path.is_empty() || !settings.hosts.is_empty();
+        candidates.into_iter().find(|p| p.is_file() &&
+            (configured || p.starts_with(&self.paths.helper) || compatible_external_helper(p)))
     }
 
     pub fn status(&self, app: &AppHandle) -> AppStatus {
@@ -766,6 +771,46 @@ impl Shared {
     }
 }
 
+fn compatible_external_helper(path: &Path) -> bool {
+    static CHECKS: OnceLock<Mutex<HashMap<PathBuf, (u64, Option<SystemTime>, bool)>>> = OnceLock::new();
+    let Ok(metadata) = fs::metadata(path) else { return false; };
+    let stamp = (metadata.len(), metadata.modified().ok());
+    let checks = CHECKS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = checks.lock() {
+        if let Some((length, modified, valid)) = cache.get(path) {
+            if *length == stamp.0 && *modified == stamp.1 { return *valid; }
+        }
+    }
+    let valid = probe_helper_version(path);
+    if let Ok(mut cache) = checks.lock() {
+        cache.insert(path.to_path_buf(), (stamp.0, stamp.1, valid));
+    }
+    valid
+}
+
+fn probe_helper_version(path: &Path) -> bool {
+    let Ok(mut child) = Command::new(path).arg("--version")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return false; };
+    for _ in 0..100 {
+        if child.try_wait().ok().flatten().is_some() {
+            return child.wait_with_output().ok().is_some_and(|output| {
+                output.status.success() && (helper_version_matches(&output.stdout)
+                    || helper_version_matches(&output.stderr))
+            });
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
+}
+
+fn helper_version_matches(output: &[u8]) -> bool {
+    String::from_utf8_lossy(output).lines()
+        .find_map(|line| line.strip_prefix("Mitmproxy: "))
+        .and_then(|line| line.split_whitespace().next()) == Some(installer::VERSION)
+}
+
 fn publish_new_ca(generated: &Path, destination: &Path) -> Result<(), String> {
     if destination.exists() {
         // Remove only an empty directory. Any existing file blocks replacement.
@@ -902,6 +947,13 @@ fn system_proxy_active() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_helper_discovery_accepts_only_the_pinned_version() {
+        assert!(helper_version_matches(b"Mitmproxy: 12.3.1 binary\nPython: 3.15.1\n"));
+        assert!(!helper_version_matches(b"Mitmproxy: 12.2.0 binary\n"));
+        assert!(!helper_version_matches(b"unrelated program 12.3.1\n"));
+    }
+
     #[test]
     fn capture_sessions_ignore_legacy_writers_and_keep_a_coherent_sample() {
         let dir = tempfile::tempdir().unwrap();

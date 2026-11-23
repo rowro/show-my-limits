@@ -48,7 +48,10 @@ if (demo) { state = demoStatus(); view = "overview";
     state.profiles = []; state.capture.startedAt = state.now;
   }
 }
-if (view === "setup") setupStep = !state.setup.helperPath ? 0 : !state.setup.certificateExists ? 1 : !certificateTrusted(state) ? 2 : 3;
+function requiredSetupStep() {
+  return !state.setup.helperPath || !state.setup.certificateExists ? 0 : !certificateTrusted(state) ? 1 : 2;
+}
+if (view === "setup") setupStep = requiredSetupStep();
 const previewTheme = new URLSearchParams(location.search).get("theme");
 if (demo && ["light", "dark", "system"].includes(previewTheme || "")) state.settings.theme = previewTheme as Theme;
 
@@ -96,7 +99,7 @@ function render() {
   document.documentElement.dataset.platform = state.setup.platform;
   if (deferDuringPointer(render)) return;
   if (needsSetup(state)) {
-    const required = !state.setup.helperPath ? 0 : !state.setup.certificateExists ? 1 : !certificateTrusted(state) ? 2 : 3;
+    const required = requiredSetupStep();
     if (view !== "setup" || setupStep > required) setupStep = required;
     view = "setup";
   }
@@ -207,20 +210,20 @@ function setup() {
     : state.setup.platform === "windows"
       ? "В мастере импорта выбери «Текущий пользователь» → «Доверенные корневые центры сертификации». Затем перезапусти клиент."
       : linuxCertificateHelp();
+  const manualTrust = state.setup.platform === "linux"
+    ? `<div class="trust-guide">${trust}</div><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}`
+    : `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button></details>`;
   const steps = [
-    `<section class="setup-step"><span class="step-number ${helper ? "done" : ""}">${helper ? icon("check") : "1"}</span><div><h3>Перехватчик <span class="pill ${helper ? "good" : ""}">${helper ? "Установлен" : "Нужен mitmproxy"}</span></h3>
-      ${helper ? `<p>Найдена установленная версия. Повторная установка не нужна.</p><details class="helper-location"><summary>Где установлен</summary><p class="helper-path">${esc(state.setup.helperPath)}</p></details>` : `<p>Установим официальный mitmproxy в каталог приложения.</p><button class="secondary" data-action="install-helper" ${busy || installing || !state.setup.installSupported ? "disabled" : ""}>${installing ? progress : "Установить mitmproxy"}</button>${!state.setup.installSupported ? '<p class="field-help">Для этой архитектуры укажи свою установку в настройках.</p>' : ""}<details><summary>Уже установлен? Указать путь</summary><form id="helper-form"><input name="helperPath" aria-label="Путь к mitmdump" placeholder="Путь к mitmdump"/><button class="secondary setup-link" type="submit">Использовать</button></form></details>`}
-    </div></section>`,
-    `<section class="setup-step"><span class="step-number ${ready ? "done" : ""}">${ready ? icon("check") : "2"}</span><div><h3>Сертификат <span class="pill ${ready ? "good" : ""}">${ready ? "Создан" : "Не создан"}</span></h3><p>Локальный, отдельный для этого приложения.</p><button class="secondary" data-action="certificate" ${!helper || ready || busy ? "disabled" : ""}>${ready ? "Сертификат готов" : busy && !installing ? "Подготавливаем…" : "Создать сертификат"}</button></div></section>`,
-    `<section class="setup-step"><span class="step-number ${trusted ? "done" : ""}">${trusted ? icon("check") : "3"}</span><div><h3>Доверие сертификату <span class="pill ${trusted ? "good" : ""}">${trusted ? "Готово" : "Нужна установка"}</span></h3>
+    `<section class="setup-step"><span class="step-number">1</span><div><h3>Подготовка</h3><p>${!helper ? installing ? progress : busy ? "Ищем mitmproxy и готовим загрузку…" : toast ? "Подготовка остановлена." : "Ищем mitmproxy…" : !ready ? busy ? "Создаём локальный сертификат…" : "Сертификат ещё не создан." : "Перехватчик и сертификат готовы."}</p><p class="field-help">Приложение само найдёт mitmdump или загрузит проверенную версию и создаст отдельный локальный сертификат.</p>${!busy && (!helper || !ready) ? `<button class="secondary" data-action="prepare-setup">Повторить подготовку</button>` : ""}${!state.setup.installSupported && !helper ? '<p class="field-help">Для этой архитектуры укажи установленный mitmdump вручную.</p>' : ""}<details><summary>Указать свой mitmdump</summary><form id="helper-form"><input name="helperPath" aria-label="Путь к mitmdump" placeholder="Путь к mitmdump" ${busy ? "disabled" : ""}/><button class="secondary setup-link" type="submit" ${busy ? "disabled" : ""}>Использовать</button></form></details>${helper ? `<details class="helper-location"><summary>Где установлен</summary><p class="helper-path">${esc(state.setup.helperPath)}</p></details>` : ""}</div></section>`,
+    `<section class="setup-step"><span class="step-number ${trusted ? "done" : ""}">${trusted ? icon("check") : "2"}</span><div><h3>Доверие сертификату <span class="pill ${trusted ? "good" : ""}">${trusted ? "Готово" : "Нужна установка"}</span></h3>
     ${state.setup.platform === "macos" ? `<p>${trusted ? "Доверие настроено. После включения перехватчика полностью выйди из Claude через ⌘Q и открой его заново." : "Добавим сертификат в связку «Система» и настроим доверие для HTTPS. macOS может запросить два подтверждения: для импорта и для доверия. Пароль вводится в системных окнах."}</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${busy && pendingAction === "install-certificate" ? "Ожидаем разрешения…" : trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
     ${state.setup.platform === "windows" ? `<p>Установим текущий сертификат в доверенные корневые центры текущего пользователя Windows.</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
     ${identity}
-    ${state.setup.platform === "macos" ? `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}</details>` : `<div class="trust-guide">${trust}</div>${state.setup.platform === "windows" ? `<button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}Открыть сертификат</button>` : ""}<button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button>${!trusted ? `<button class="primary setup-link confirm-trust" data-action="confirm-trust" ${!ready || busy ? "disabled" : ""}>Я добавил доверие</button>` : ""}`}
+    ${manualTrust}
     <p class="subtle">Получение нового ответа Claude подтвердит, что клиент доверяет сертификату.</p></div></section>`,
-    `<section class="setup-step"><span class="step-number ${configured ? "done" : ""}">${configured ? icon("check") : "4"}</span><div><h3>Сервер и процессы <span class="pill ${configured ? "good" : ""}">${configured ? "Выбраны" : "Не выбраны"}</span></h3><form id="setup-form">${connectionFields({ ...state.settings, ...(setupDraft || {}) }, !setupDraft)}</form></div></section>`
+    `<section class="setup-step"><span class="step-number ${configured ? "done" : ""}">${configured ? icon("check") : "3"}</span><div><h3>Сервер и процессы <span class="pill ${configured ? "good" : ""}">${configured ? "Выбраны" : "Не выбраны"}</span></h3><form id="setup-form">${connectionFields({ ...state.settings, ...(setupDraft || {}) }, !setupDraft)}</form></div></section>`
   ];
-  return `<div class="wizard-heading"><span class="wizard-caption">Подключение · шаг ${setupStep + 1} из 4</span><div class="wizard-progress" aria-label="Шаг ${setupStep + 1} из 4">${steps.map((_, i) => `<i class="${i <= setupStep ? "active" : ""}"></i>`).join("")}</div></div>${steps[setupStep]}`;
+  return `<div class="wizard-heading"><span class="wizard-caption">Подключение · шаг ${setupStep + 1} из 3</span><div class="wizard-progress" aria-label="Шаг ${setupStep + 1} из 3">${steps.map((_, i) => `<i class="${i <= setupStep ? "active" : ""}"></i>`).join("")}</div></div>${steps[setupStep]}`;
 
 }
 
@@ -246,11 +249,6 @@ function settings() {
     <p class="field-help">Если изменить сервер или процессы, захват перезапустится при сохранении.</p></div></form>`;
 }
 
-function setupStepReady() {
-  return [!!state.setup.helperPath, state.setup.certificateExists,
-    certificateTrusted(state), true][setupStep];
-}
-
 function renderGnome() {
   if (deferDuringPointer(renderGnome)) return;
   const section = document.querySelector<HTMLElement>("#gnome-section");
@@ -273,17 +271,17 @@ function renderFooter() {
   const phase = state.capture.phase;
   const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Ошибка соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
   setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
-  const wizardNav = view === "setup" ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy || setupStep === 0 ? "disabled" : ""}>Назад</button>${setupStep === 3 ? `<button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Подключаем…" : "Подключить"}</button>` : `<button class="primary" data-action="setup-next" ${busy || !setupStepReady() ? "disabled" : ""}>Далее${icon("arrow")}</button>`}</div>` : "";
+  const wizardNav = view === "setup" && setupStep === 2 ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy ? "disabled" : ""}>Назад</button><button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Подключаем…" : "Подключить"}</button></div>` : "";
   setMarkupIfChanged(document.querySelector("#screen-actions")!, `${wizardNav}${view === "settings" ? `<button class="primary screen-save" type="submit" form="settings-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Сохранить"}</button>` : ""}`);
   setMarkupIfChanged(document.querySelector("#footer")!, `<div class="footer-bottom"><span class="version">${esc(appVersion)}</span><button class="text-button" data-action="quit">Выйти</button></div>`);
-  const message = toast || state.setup.certificateTrustError || state.setup.installation.error || state.capture.error || state.connectionIssue;
+  const message = toast || state.setup.certificateTrustError || (!state.setup.helperPath && state.setup.installation.error) || state.capture.error || state.connectionIssue;
   const notice = document.querySelector("#notice")!;
   setMarkupIfChanged(notice, message ? `<div class="notice">${icon("warning")}<span>${esc(message)}</span><button class="icon-button" data-action="dismiss" aria-label="Закрыть сообщение">${icon("close")}</button></div>` : "");
 }
 
 async function refresh() {
   if (!native) return;
-  try { state = await invoke<Status>("get_status"); if (firstStatus) { view = needsSetup(state) ? "setup" : "overview"; setupStep = !state.setup.helperPath ? 0 : !state.setup.certificateExists ? 1 : !certificateTrusted(state) ? 2 : 3; firstStatus = false; } applyTheme(state.settings.theme); if (view !== "settings" || needsSetup(state)) render(); else renderFooter(); }
+  try { state = await invoke<Status>("get_status"); if (firstStatus) { view = needsSetup(state) ? "setup" : "overview"; setupStep = requiredSetupStep(); firstStatus = false; } applyTheme(state.settings.theme); if (view !== "settings" || needsSetup(state)) render(); else renderFooter(); }
   catch { toast = "Не удалось получить состояние Show My Limits."; renderFooter(); }
 }
 
@@ -304,6 +302,31 @@ async function finishSetup() {
   else { state.capture.phase = "starting"; state.capture.startedAt = state.now; }
   view = "overview";
   await refresh(); render();
+}
+
+async function prepareSetup() {
+  if (busy || (state.setup.helperPath && state.setup.certificateExists)) return;
+  busy = true; pendingAction = "prepare-setup"; toast = null; render();
+  try {
+    if (!native) {
+      state.setup.helperPath ||= "/preview/mitmdump";
+      state.setup.certificateExists = true;
+    } else {
+      if (!state.setup.helperPath) {
+        if (!state.setup.installSupported) throw new Error("Для этой архитектуры укажи установленный mitmdump вручную.");
+        await invoke("install_helper");
+        await refresh();
+        if (!state.setup.helperPath) throw new Error("Установленный mitmdump не найден. Повтори подготовку или укажи путь вручную.");
+      }
+      if (!state.setup.certificateExists) {
+        await invoke("prepare_certificate");
+        await refresh();
+        if (!state.setup.certificateExists) throw new Error("Сертификат не создан. Повтори подготовку.");
+      }
+    }
+    setupStep = requiredSetupStep();
+  } catch (error) { toast = String(error); }
+  finally { busy = false; pendingAction = ""; render(); }
 }
 
 async function action(name: string) {
@@ -328,12 +351,10 @@ async function action(name: string) {
     renderUpdates(); return;
   }
   if (name === "dismiss") { toast = null; state.capture.error = null; state.connectionIssue = null; renderFooter(); return; }
-  if (name === "setup-next" && !busy && setupStepReady()) { setupStep = Math.min(3, setupStep + 1); render(); return; }
-  if (name === "setup-back" && !busy) { setupStep = Math.max(0, setupStep - 1); render(); return; }
+  if (name === "prepare-setup") { await prepareSetup(); return; }
+  if (name === "setup-back" && !busy) { setupStep = 1; render(); return; }
   if (!native) {
-    if (name === "install-helper") state.setup.helperPath = "/preview/mitmdump";
-    if (name === "certificate") state.setup.certificateExists = true;
-    if (["install-certificate", "confirm-trust"].includes(name)) { state.settings.certificateTrustConfirmed = true; state.setup.certificateTrusted = true; }
+    if (["install-certificate", "confirm-trust"].includes(name)) { state.settings.certificateTrustConfirmed = true; state.setup.certificateTrusted = true; setupStep = 2; }
     if (name === "start") { state.capture.phase = "starting"; state.capture.startedAt = state.now; }
     if (name === "stop") state.capture.phase = "stopped";
     render(); return;
@@ -348,24 +369,18 @@ async function action(name: string) {
       toast = gnomeStatus.message;
     }
     if (name === "finish-setup") await finishSetup();
-    if (name === "install-helper") await invoke("install_helper");
     if (name === "confirm-trust") {
       const next = { ...state.settings, certificateTrustConfirmed: true };
       await invoke("save_settings", { settings: next }); state.settings = next;
     }
     if (name === "start") { await invoke("start_capture"); view = "overview"; }
     if (name === "stop") await invoke("stop_capture");
-    if (name === "certificate") await invoke("prepare_certificate");
     if (name === "install-certificate") await invoke("install_certificate");
     if (name === "open-certificate") await invoke("open_certificate");
     if (name === "reveal-certificate") await invoke("reveal_certificate");
     await refresh();
-    // Successful setup actions already establish the next prerequisite.
-    if (view === "setup" && ((name === "install-helper" && setupStep === 0 && state.setup.helperPath)
-      || (name === "certificate" && setupStep === 1 && state.setup.certificateExists)
-      || (name === "install-certificate" && setupStep === 2 && certificateTrusted(state)))) {
-      setupStep = Math.min(3, setupStep + 1);
-    }
+    if (view === "setup" && ["install-certificate", "confirm-trust"].includes(name)
+      && certificateTrusted(state)) setupStep = 2;
     if (view === "setup") render();
   } catch (error) { toast = String(error); }
   finally { busy = false; pendingAction = ""; if (view === "setup") render(); else renderFooter(); }
@@ -433,6 +448,7 @@ root.addEventListener("submit", async event => {
     ? { ...state.settings, helperPath: String(data.get("helperPath") || "").trim() }
     : { ...state.settings, hosts: data.getAll("hosts").map(String).map(h => h.trim()).filter(Boolean),
         additionalProcesses: readProcesses(data) };
+  let helperSaved = false;
   busy = true; toast = null; renderFooter();
   try {
     if (form.id !== "helper-form" && !next.hosts.length) throw new Error("Укажи хотя бы один сервер.");
@@ -440,11 +456,12 @@ root.addEventListener("submit", async event => {
     state.settings = next;
     if (!native && form.id === "helper-form") state.setup.helperPath = next.helperPath || null;
     if (native) await refresh();
+    if (form.id === "helper-form") helperSaved = true;
     if (needsSetup(state)) view = "setup";
     else if (form.id === "setup-form") { setupDraft = null; await finishSetup(); }
     else if (form.id === "settings-form") { settingsDraft = null; view = "overview"; }
   } catch (error) { toast = String(error); }
-  finally { busy = false; render(); }
+  finally { busy = false; render(); if (helperSaved) void prepareSetup(); }
 });
 
 function readProcesses(data: FormData) {
@@ -480,7 +497,7 @@ root.addEventListener("change", async event => {
 const devScenes = [
   ["limits", "Лимиты"], ["low", "Лимиты заканчиваются"], ["exhausted", "Лимит исчерпан"], ["stale", "Устаревшие данные"],
   ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["stopped", "Перехват выключен"], ["settings", "Настройки"],
-  ["setup-0", "1 · Перехватчик"], ["setup-1", "2 · Сертификат"], ["setup-2", "3 · Доверие"], ["setup-3", "4 · Сервер и процессы"],
+  ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Доверие"], ["setup-2", "3 · Сервер и процессы"],
 ];
 function setDevScene(scene: string) {
   if (!devTools) return;
@@ -509,8 +526,8 @@ function setDevScene(scene: string) {
     state.profiles = []; state.settings.hosts = [];
     state.capture.phase = "stopped"; state.capture.startedAt = null;
     state.setup.helperPath = setupStep > 0 ? "/example/mitmdump" : null;
-    state.setup.certificateExists = setupStep > 1;
-    state.settings.certificateTrustConfirmed = setupStep > 2; state.setup.certificateTrusted = setupStep > 2;
+    state.setup.certificateExists = setupStep > 0;
+    state.settings.certificateTrustConfirmed = setupStep > 1; state.setup.certificateTrusted = setupStep > 1;
   }
   sessionStorage.setItem("sml-dev-scene", scene);
   const url = new URL(location.href); url.searchParams.set("screen", scene);
@@ -532,7 +549,7 @@ function mountDevTools() {
   });
   const params = new URLSearchParams(location.search);
   const existingDemo = params.get("demo");
-  const scene = params.get("screen") || (existingDemo ? ({ restart: "quickstart", wizard: "setup-0", setup: "setup-3" }[existingDemo] || "limits") : sessionStorage.getItem("sml-dev-scene") || "limits");
+  const scene = params.get("screen") || (existingDemo ? ({ restart: "quickstart", wizard: "setup-0", setup: "setup-2" }[existingDemo] || "limits") : sessionStorage.getItem("sml-dev-scene") || "limits");
   setDevScene(scene);
 }
 
@@ -565,6 +582,7 @@ if (native) {
   updateState=await invoke<UpdateStatus>("update_status");
   await listen<UpdateStatus>("show-my-limits://update", event => { updateState=event.payload; renderUpdates(); });
   await refresh();
+  if (needsSetup(state) && requiredSetupStep() === 0) void prepareSetup();
   if (state.setup.platform === "linux") {
     try { gnomeStatus = await invoke<GnomeStatus>("gnome_status"); } catch { /* ordinary tray remains available */ }
   }
