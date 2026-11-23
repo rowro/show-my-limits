@@ -9,7 +9,9 @@ import tempfile
 import time
 
 binary = str(Path(sys.argv[1]).resolve())
-with tempfile.TemporaryDirectory(prefix='sml-gnome-smoke-') as temporary:
+# The desktop portal can still write to its XDG directory after the app exits.
+# A cleanup race must not turn a passing bridge smoke test into a failed build.
+with tempfile.TemporaryDirectory(prefix='sml-gnome-smoke-', ignore_cleanup_errors=True) as temporary:
     env = os.environ.copy()
     for name, folder in [('XDG_DATA_HOME', 'data'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache')]:
         env[name] = str(Path(temporary) / folder)
