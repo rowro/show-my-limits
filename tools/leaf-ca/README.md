@@ -51,4 +51,4 @@ macOS 27 arm64, `/opt/homebrew/bin/mitmdump` 12.3.1 в режиме `local:Claud
 
 - Chrome/Electron на macOS через системное доверие в CI: на раннере его не изменить без диалога. Вручную проверено через Claude Desktop.
 - Windows и Linux с реальными клиентами Claude и режимом `local`.
-- Перенос в приложение сделан (`src-tauri/src/certificate.rs`, rcgen; аргумент `--certs`, подсказка о перезапуске, перевыпуск старых CA в новый формат), но нативно ещё не проверен: мастер GUI, `macos_trust::is_trusted` для CA с ограничениями, Windows и Linux.
+- Перенос в приложение (`src-tauri/src/certificate.rs`, rcgen) на macOS проверен нативно 2026-11-24; Windows и Linux — нет.

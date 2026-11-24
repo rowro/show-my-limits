@@ -192,7 +192,8 @@ function restartView() {
 
 function serverContext() {
   const server = state.settings.hosts[0] || "не указан";
-  return `<div class="server-context"><div><span>Выбранный сервер</span><strong>${esc(server)}</strong></div><button type="button" class="text-button" data-action="edit-server">Изменить</button></div>`;
+  // Always visible on the main screen, so a screenshot shows which server is captured.
+  return `<p class="server-context">Сервер: <strong>${esc(server)}</strong></p>`;
 }
 
 function systemTrustWarning(inSettings = false) {
@@ -433,7 +434,6 @@ async function prepareSetup() {
 }
 
 async function action(name: string) {
-  if (name === "edit-server") { settingsTab = "capture"; view = "settings"; toast = null; render(); return; }
   if (name === "make-report") {
     try {
       supportReport = native ? await invoke<string>("diagnostic_report") : "Show My Limits (browser preview)\nStatus: no native diagnostics";
