@@ -404,13 +404,22 @@ fn execute() -> Result<(), String> {
                     Some(_) => "more than 30 days",
                     None => "unknown",
                 };
-                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture live: {}\nFresh quota: {}",
+                let observation = match live.as_ref().and_then(|state| state.health.as_ref()).map(|health| health.kind.as_str()) {
+                    Some("request_seen") => "request without response",
+                    Some("response_received") => "response without quota",
+                    Some("certificate_client" | "certificate_server") => "certificate rejected",
+                    Some("network_ipv6" | "network_unreachable") => "network unreachable",
+                    Some("tls_client" | "tls_server") => "TLS incomplete",
+                    Some("quota_received") => "quota received",
+                    _ => "none/unknown",
+                };
+                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture live: {}\nFresh quota: {}\nLast observation: {}",
                     env!("CARGO_PKG_VERSION"), std::env::consts::OS, session,
                     if paths.helper().is_ok() { "present" } else { "missing" },
                     if cert.is_file() { "present" } else { "missing" }, trusted, scope, ca_lifetime,
                     if certificate::security_issue(&paths.ca()).is_some() { "needs review" } else { "no issue detected" },
                     if live.is_some() { "yes" } else { "no" },
-                    if fresh { "yes" } else { "no" });
+                    if fresh { "yes" } else { "no" }, observation);
                 return Ok(());
             }
             println!(
@@ -504,7 +513,7 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
                     *host = settings::normalize_host(host)?;
                 }
                 if !certificate::complete_store(&paths.ca()) {
-                    return Err("The CA store is incomplete, symlinked or its certificate files do not match. Existing material was preserved; inspect it before restoring from backup.".into());
+                    return Err("The CA store is incomplete, symlinked, or its private key does not match the certificate. Existing material was preserved; inspect it before restoring from backup.".into());
                 }
                 if !trusted(&paths.cert())? {
                     return Err(

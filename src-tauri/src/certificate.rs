@@ -288,7 +288,7 @@ mod tests {
         let staging = tempfile::tempdir().unwrap();
         let store = staging.path().join("generated");
         fs::create_dir(&store).unwrap();
-        let key = store.join("mitmproxy-ca.pem");
+        let key = store.join("test-key");
         fs::write(&key, b"test key").unwrap();
         secure_new_store(&store).unwrap();
         assert_eq!(fs::metadata(&store).unwrap().permissions().mode() & 0o777, 0o700);

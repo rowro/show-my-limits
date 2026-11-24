@@ -44,7 +44,13 @@ pub fn render(status: &AppStatus) -> String {
             "capture_error: inspect the error shown in the app"
         }
     } else if status.connection_issue.is_some() {
-        "connection_error: inspect the connection message in the app"
+        match status.capture.observation.as_deref() {
+            Some("certificate_client" | "certificate_server") => "certificate_rejected: check CA trust and restart the client",
+            Some("network_ipv6") => "network_ipv6: route to selected server unavailable over IPv6",
+            Some("network_unreachable") => "network_unreachable: route to selected server unavailable",
+            Some("tls_client" | "tls_server") => "tls_incomplete: TLS handshake did not complete",
+            _ => "connection_error: inspect the connection message in the app",
+        }
     } else if status.capture.phase == "starting" {
         "capture_starting: wait for the helper to become ready"
     } else if status.capture.phase == "stopped" {
@@ -103,5 +109,19 @@ mod tests {
         let report = render(&status);
         assert!(report.contains("CA lifetime: 30 days or less"));
         assert!(!report.contains(&(1000 + 15 * 86400).to_string()));
+    }
+    #[test]
+    fn report_classifies_network_failure_without_host() {
+        let mut status = AppStatus {
+            settings: Default::default(), profiles: vec![], capture: Default::default(),
+            setup: Default::default(), connection_issue: Some("secret.example is unreachable".into()), now: 1000.0,
+        };
+        status.setup.helper_path = Some("/private/helper".into());
+        status.setup.certificate_exists = true;
+        status.capture.phase = "listening".into();
+        status.capture.observation = Some("network_ipv6".into());
+        let report = render(&status);
+        assert!(report.contains("Status: network_ipv6:"));
+        assert!(!report.contains("secret.example"));
     }
 }
