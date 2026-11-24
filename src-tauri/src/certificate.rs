@@ -58,6 +58,9 @@ pub fn debian_system_trust(cert_path: &Path) -> Option<bool> {
 
 /// Refuse to let a helper regenerate a partially deleted existing CA.
 pub fn complete_store(directory: &Path) -> bool {
+    if !fs::symlink_metadata(directory).is_ok_and(|m| m.file_type().is_dir()) {
+        return false;
+    }
     let public_path = directory.join("mitmproxy-ca-cert.cer");
     let combined_path = directory.join("mitmproxy-ca.pem");
     let dh_path = directory.join("mitmproxy-dhparam.pem");
@@ -190,10 +193,19 @@ mod tests {
     fn complete_store_rejects_symlinked_key() {
         use std::os::unix::fs::symlink;
         let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("mitmproxy-ca-cert.cer"), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        let public = include_bytes!("../tests/fixtures/test-ca.pem");
+        fs::write(directory.path().join("mitmproxy-ca-cert.cer"), public).unwrap();
         fs::write(directory.path().join("mitmproxy-dhparam.pem"), b"dh parameters").unwrap();
+        let mut combined = b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n".to_vec();
+        combined.extend_from_slice(public);
+        fs::write(directory.path().join("mitmproxy-ca.pem"), combined).unwrap();
+        assert!(complete_store(directory.path()));
+        let linked_directory = directory.path().join("linked-certificates");
+        symlink(directory.path(), &linked_directory).unwrap();
+        assert!(!complete_store(&linked_directory));
         let key = directory.path().join("key.pem");
         fs::write(&key, b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n").unwrap();
+        fs::remove_file(directory.path().join("mitmproxy-ca.pem")).unwrap();
         symlink(key, directory.path().join("mitmproxy-ca.pem")).unwrap();
         assert!(!complete_store(directory.path()));
     }

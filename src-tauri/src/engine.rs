@@ -841,7 +841,7 @@ fn helper_version_matches(output: &[u8]) -> bool {
 }
 
 fn publish_new_ca(generated: &Path, destination: &Path) -> Result<(), String> {
-    if destination.exists() {
+    if fs::symlink_metadata(destination).is_ok() {
         // Remove only an empty directory. Any existing file blocks replacement.
         fs::remove_dir(destination).map_err(|_| {
             "В каталоге уже есть сертификат или ключ. Они сохранены без изменений.".to_string()
@@ -1163,6 +1163,16 @@ mod tests {
             fs::read(empty.join("mitmproxy-ca.pem")).unwrap(),
             b"new key"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let dangling = root.path().join("dangling");
+            symlink(root.path().join("missing"), &dangling).unwrap();
+            let another = root.path().join("another-generated");
+            fs::create_dir(&another).unwrap();
+            assert!(publish_new_ca(&another, &dangling).is_err());
+            assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+        }
     }
     #[test]
     fn automatic_capture_requires_completed_setup() {

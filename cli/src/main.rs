@@ -125,7 +125,7 @@ fn setup(paths: &Paths) -> Result<(), String> {
         println!("Reusing certificate: {}", paths.cert().display());
         return Ok(());
     }
-    if paths.ca().exists()
+    if fs::symlink_metadata(paths.ca()).is_ok()
         && fs::read_dir(paths.ca())
             .map_err(|e| e.to_string())?
             .next()
@@ -184,7 +184,7 @@ fn setup(paths: &Paths) -> Result<(), String> {
         return Err("CA initialization produced incomplete material".into());
     }
     certificate::secure_new_store(&generated)?;
-    if paths.ca().exists() {
+    if fs::symlink_metadata(paths.ca()).is_ok() {
         fs::remove_dir(paths.ca()).map_err(|_| "Existing CA material was preserved")?;
     }
     fs::rename(generated, paths.ca()).map_err(|e| e.to_string())?;
