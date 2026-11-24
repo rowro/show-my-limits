@@ -113,6 +113,9 @@ jobs:
           install_dir=$(mktemp -d)
           dpkg-deb -x "$package" "$install_dir"
           test -x "$install_dir/usr/bin/sml"
+          depends=$(dpkg-deb -f "$package" Depends)
+          [[ ",$depends," =~ (^|[,[:space:]])sudo([,[:space:]]|$) ]]
+          [[ ",$depends," =~ (^|[,[:space:]])zenity([,[:space:]]|$) ]]
       - name: Package terminal utility
         shell: bash
         env:
