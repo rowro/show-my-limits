@@ -9,7 +9,8 @@
 
 By default no OS trust store is touched. Chrome on Linux uses a temporary NSS
 database under a temporary HOME. `--os-trust` additionally adds the CA to the
-machine trust store so Chrome uses the platform verifier on macOS/Windows; it
+machine trust store so Chrome uses the platform verifier on Windows (macOS
+runners cannot change trust without a dialog); it
 refuses to run outside GitHub Actions and removes the CA afterwards.
 
 Usage: run_checks.py <mitmdump path or name in PATH> [--host corp-llm.test] [--json out.json] [--os-trust]
@@ -175,10 +176,10 @@ class ChromeTrust:
         elif os.environ.get("GITHUB_ACTIONS") != "true":
             self.reason = "--os-trust refused outside GitHub Actions"
         elif sys.platform == "darwin":
-            subprocess.run(["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
-                            "-k", "/Library/Keychains/System.keychain", str(self.ca)], check=True, timeout=60)
-            self._undo.append(["sudo", "security", "remove-trusted-cert", "-d", str(self.ca)])
-            self.ready = True
+            # Hosted macOS runners refuse authorizationdb changes (-60005) and
+            # add-trusted-cert waits for a dialog. Security.framework is still
+            # checked with an explicit anchor; Chrome on macOS stays manual.
+            self.reason = "macOS trust settings need an interactive confirmation"
         elif sys.platform == "win32":
             thumb = subprocess.run(["powershell", "-NoProfile", "-Command",
                                     f"(Import-Certificate -FilePath '{self.ca}' -CertStoreLocation Cert:\\LocalMachine\\Root).Thumbprint"],

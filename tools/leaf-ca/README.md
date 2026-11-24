@@ -19,7 +19,7 @@
 python -I tools/leaf-ca/run_checks.py <mitmdump> [--host corp-llm.test] [--json out.json]
 ```
 
-Нужен Python с `cryptography` (ставится вместе с `mitmproxy==12.3.1`). По умолчанию хранилища доверия ОС не меняются: каждый клиент получает `ca.pem` явно. Chrome на Linux использует временную NSS-базу во временном `HOME`. Флаг `--os-trust` добавляет CA в машинное хранилище, чтобы Chrome проверял сертификат системным верификатором; он работает только в GitHub Actions и удаляет CA после проверки. Воркфлоу: `.github/workflows/ca-constraints.yml`.
+Нужен Python с `cryptography` (ставится вместе с `mitmproxy==12.3.1`). По умолчанию хранилища доверия ОС не меняются: каждый клиент получает `ca.pem` явно. Chrome на Linux использует временную NSS-базу во временном `HOME`. Флаг `--os-trust` добавляет CA в машинное хранилище Windows, чтобы Chrome проверял сертификат системным верификатором; он работает только в GitHub Actions и удаляет CA после проверки. На macOS-раннере изменить доверие без диалога нельзя, поэтому Chrome на macOS проверяется вручную. Воркфлоу: `.github/workflows/ca-constraints.yml`.
 
 Для каждого верификатора проверяется: лист для сервера и поддомена принимается; `evil.test`, `<сервер>.evil.test` и `not<сервер>` отклоняются. Через mitmproxy проверяется: клиент получает наш лист и заголовки квот; хост вне `--certs` подписывается недоверенным CA mitmproxy и отклоняется.
 
@@ -29,13 +29,15 @@ python -I tools/leaf-ca/run_checks.py <mitmdump> [--host corp-llm.test] [--json 
 |---|---|---|
 | macOS 27 arm64 (локально) | OpenSSL 4.0.3, Python ssl, Node 22, Security.framework, curl/LibreSSL 3.3.6 | 30/30; curl/LibreSSL принимает `not<сервер>` (WARN, см. ниже) |
 | Debian 13 arm64 (Docker) | OpenSSL 3.5, Python ssl, Node, curl/OpenSSL, Chromium 156 через NSS | 30/30 |
+| Windows Server, GitHub Actions | OpenSSL, Python ssl, Node, curl/Schannel, CryptoAPI (X509Chain), Chrome через Local Machine Root | все проверки прошли |
+| Ubuntu 24.04 x64 и arm64, GitHub Actions | OpenSSL, Python ssl, Node, curl/OpenSSL, Chrome через NSS | все проверки прошли |
 | mitmproxy 12.3.1 `--certs` | обычный режим прокси | лист отдаётся, квоты доходят, чужой хост отклоняется |
 
 LibreSSL сравнивает ограничение имени как строковый суффикс, поэтому `notcorp.example` проходит ограничение `corp.example`. Это слабость конкретного клиента (системный curl macOS), а не схемы: для эксплуатации всё равно нужен ключ CA. Claude Desktop (Chromium) и Claude Code этой библиотекой не пользуются.
 
 ## Что ещё не проверено
 
-- Windows CryptoAPI, Schannel и Chrome на Windows/macOS через системное хранилище: проверки написаны, нужен прогон воркфлоу.
+- Chrome на macOS через системное доверие: на раннере его не изменить без диалога, проверить вручную вместе с Claude Desktop.
 - Режим `local` mitmproxy (перехват по процессу) с `--certs`. Выбор сертификата не зависит от режима, но это нужно подтвердить на реальном захвате.
 - Реальные клиенты: Claude Desktop и Claude Code, в том числе в IDE, с CA, добавленным в доверие текущего пользователя.
 - Перенос в приложение: генерация в Rust (например, `rcgen`) без записи ключа CA, аргумент `--certs`, перевод существующих установок через уже начатый явный перевыпуск CA.

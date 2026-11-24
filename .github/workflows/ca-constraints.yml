@@ -26,10 +26,6 @@ jobs:
       - name: Linux NSS tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libnss3-tools
-      - name: Allow admin trust changes without a GUI prompt
-        if: runner.os == 'macOS'
-        # Disposable runner only: otherwise add-trusted-cert waits for a dialog.
-        run: sudo security authorizationdb write com.apple.trust-settings.admin allow
       - name: Pinned mitmproxy
         run: pip install mitmproxy==12.3.1
       - name: Leaf-only CA checks
