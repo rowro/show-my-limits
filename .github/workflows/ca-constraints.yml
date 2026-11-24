@@ -1,0 +1,40 @@
+name: CA constraints
+on:
+  workflow_dispatch:
+  push:
+    paths: ['tools/leaf-ca/**', '.github/workflows/ca-constraints.yml']
+  pull_request:
+    paths: ['tools/leaf-ca/**', '.github/workflows/ca-constraints.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Linux NSS tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libnss3-tools
+      - name: Pinned mitmproxy
+        run: pip install mitmproxy==12.3.1
+      - name: Leaf-only CA checks
+        shell: bash
+        # --os-trust adds the test CA to the runner's machine trust store so
+        # Chrome uses the platform verifier; the script removes it afterwards.
+        run: python -I tools/leaf-ca/run_checks.py mitmdump --os-trust --json "leaf-ca-${{ matrix.os }}.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: leaf-ca-${{ matrix.os }}
+          path: leaf-ca-${{ matrix.os }}.json
+          if-no-files-found: warn
