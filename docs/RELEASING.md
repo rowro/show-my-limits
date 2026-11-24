@@ -16,6 +16,20 @@ macOS builds are ad-hoc signed without Apple notarization until a Developer ID i
 
 Before publication, smoke-test first installation, CA trust, capture start/stop, quota receipt, app quit, and an update from the preceding version on every supported OS. A successful build is not proof of capture permissions or certificate trust.
 
+## CA and capture release gate
+
+Do not publish a build with the one-year CA until an explicit, tested replacement path exists for users whose CA is approaching expiry. Test the following with disposable accounts or test machines; never reset a maintainer's live application data:
+
+1. Fresh install on macOS, Windows and Debian/Ubuntu: create CA, verify key/certificate match and file permissions, authorize trust, restart the mock client, receive fresh quotas, and stop capture. Confirm no OS trust is added before the user's action.
+2. Upgrade with an existing CA: verify its fingerprint and trust scope remain unchanged until the user starts replacement. On macOS include an old System/Admin CA; on Linux include a system-wide Debian CA. Check that the app warns about the wider scope.
+3. Replacement: generate a different key in a separate private directory; trust the new CA explicitly; receive a fresh HTTPS response signed by it; then switch the active store. If trust or capture fails, verify the old CA and capture still work.
+4. Cleanup: remove old trust by the exact fingerprint and only after a separate confirmation. Verify the old key is removed only after the trust-removal result is confirmed. Cancel the OS prompt and ensure the app reports unfinished cleanup instead of success.
+5. Run GUI capture with `sml watch`, then exit the viewer: GUI capture must continue. Run standalone `sml run`, then stop it: the helper must exit. Check that both frontends use the same active CA and neither silently rewrites settings.
+6. On graphical Debian 13, exercise the tray menu, left click, outside click, `zenity`/sudo prompt, cancel and retry, and a real local capture heartbeat. Test both X11 and Wayland where available. Verify the displayed server and the redacted diagnostic report on failure.
+7. Reinstall/update from the preceding release and confirm user settings, CA and trust are preserved until the explicit replacement flow. Check AppImage updating separately from manual DEB upgrade.
+
+Record OS, package architecture, exact build commit, trust scope and outcome for each case in the release review. CI and container tests do not replace these interactive checks.
+
 Before publication, verify the draft locally using the maintainer's existing GitHub CLI authorization:
 
 ```sh
