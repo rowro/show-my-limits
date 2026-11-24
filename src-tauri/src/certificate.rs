@@ -6,6 +6,7 @@ use x509_parser::{pem::parse_x509_pem, prelude::*};
 pub struct CertificateDetails {
     pub name: String,
     pub sha256: String,
+    pub expires_at: i64,
 }
 
 fn parse(bytes: &[u8]) -> Option<CertificateDetails> {
@@ -24,7 +25,7 @@ fn parse(bytes: &[u8]) -> Option<CertificateDetails> {
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
         .join(":");
-    Some(CertificateDetails { name, sha256 })
+    Some(CertificateDetails { name, sha256, expires_at: cert.validity().not_after.timestamp() })
 }
 
 pub fn details(path: &Path) -> Option<CertificateDetails> {

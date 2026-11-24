@@ -21,6 +21,12 @@ pub fn render(status: &AppStatus) -> String {
     let fresh = status.profiles.iter().any(|profile| {
         (0.0..600.0).contains(&(status.now - profile.observed_at))
     });
+    let ca_lifetime = match status.setup.certificate_expires_at {
+        Some(expiry) if expiry as f64 <= status.now => "expired",
+        Some(expiry) if expiry as f64 - status.now <= 30.0 * 86400.0 => "30 days or less",
+        Some(_) => "more than 30 days",
+        None => "unknown",
+    };
     let reason = if status.setup.helper_path.is_none() {
         "helper_missing: install mitmproxy in the setup wizard"
     } else if !status.setup.certificate_exists {
@@ -51,7 +57,7 @@ pub fn render(status: &AppStatus) -> String {
         "quota_fresh"
     };
     format!(
-        "Show My Limits {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA file permissions: {}\nCapture: {}\nFresh quota: {}\nStatus: {}",
+        "Show My Limits {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA file permissions: {}\nCapture: {}\nFresh quota: {}\nStatus: {}",
         env!("CARGO_PKG_VERSION"),
         status.setup.platform,
         session,
@@ -59,6 +65,7 @@ pub fn render(status: &AppStatus) -> String {
         if status.setup.certificate_exists { "present" } else { "missing" },
         trust,
         scope,
+        ca_lifetime,
         if status.setup.certificate_security_issue.is_some() { "needs review" } else { "no issue detected" },
         status.capture.phase,
         if fresh { "yes" } else { "no" },
@@ -83,5 +90,16 @@ mod tests {
         for secret in ["secret.example", "/private/user", "token=secret"] {
             assert!(!report.contains(secret));
         }
+    }
+    #[test]
+    fn report_groups_ca_expiry_without_exposing_exact_date() {
+        let mut status = AppStatus {
+            settings: Default::default(), profiles: vec![], capture: Default::default(),
+            setup: Default::default(), connection_issue: None, now: 1000.0,
+        };
+        status.setup.certificate_expires_at = Some(1000 + 15 * 86400);
+        let report = render(&status);
+        assert!(report.contains("CA lifetime: 30 days or less"));
+        assert!(!report.contains(&(1000 + 15 * 86400).to_string()));
     }
 }

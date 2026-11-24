@@ -37,7 +37,7 @@ let renderedView = "";
 let renderedMarkup = "";
 let state: Status = { settings: { theme: "system", hosts: [], clients: ["desktop", "terminal"], additionalProcesses: [], selectedProfile: null, helperPath: "", certificateTrustConfirmed: false },
   profiles: [], capture: { phase: "stopped", pid: null, startedAt: null, error: null, observation: null },
-  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: null, certificateSha256: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, connectionIssue: null, now: Date.now() / 1000 };
+  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: null, certificateSha256: null, certificateExpiresAt: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, connectionIssue: null, now: Date.now() / 1000 };
 if (demo) { state = demoStatus(); view = "overview";
   if (new URLSearchParams(location.search).get("demo") === "setup") {
     state.settings.hosts = []; state.profiles = []; state.capture.phase = "stopped"; state.capture.startedAt = null; view = "setup";
@@ -201,7 +201,10 @@ function systemTrustWarning(inSettings = false) {
 function certificateTrustDetails() {
   const scope = state.setup.certificateTrustScope;
   const label = scope === "user" ? "Текущий пользователь" : scope === "system" ? "Вся система" : scope === "user+system" ? "Текущий пользователь и вся система" : scope === "none" ? "В проверенном хранилище не найден" : "Не удалось определить";
-  return `<p class="field-help">Область доверия: <strong>${label}</strong></p>${systemTrustWarning(true)}<details><summary>Отпечаток действующего CA</summary><code class="fingerprint">${esc(state.setup.certificateSha256 || "Не удалось прочитать")}</code><p class="field-help">Сравни SHA-256 перед изменением доверия. Замена старого CA пока не реализована.</p></details>`;
+  const expiresAt = state.setup.certificateExpiresAt;
+  const days = expiresAt == null ? null : Math.ceil((expiresAt - state.now) / 86400);
+  const expiry = days == null ? "" : `<p class="field-help">CA действует до ${new Date(expiresAt! * 1000).toLocaleDateString("ru-RU")}.${days <= 30 ? " Скоро потребуется перевыпуск; проверь обновления приложения." : ""}</p>`;
+  return `<p class="field-help">Область доверия: <strong>${label}</strong></p>${expiry}${systemTrustWarning(true)}<details><summary>Отпечаток действующего CA</summary><code class="fingerprint">${esc(state.setup.certificateSha256 || "Не удалось прочитать")}</code><p class="field-help">Сравни SHA-256 перед изменением доверия. Замена старого CA пока не реализована.</p></details>`;
 }
 
 function overview() {

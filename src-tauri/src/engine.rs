@@ -86,6 +86,7 @@ pub struct SetupStatus {
     pub certificate_trust_scope: Option<String>,
     pub certificate_name: Option<String>,
     pub certificate_sha256: Option<String>,
+    pub certificate_expires_at: Option<i64>,
     pub installation: Installation,
     pub install_supported: bool,
     pub launch_at_login: Option<bool>,
@@ -338,6 +339,7 @@ impl Shared {
                     { None }
                 },
                 certificate_name: identity.as_ref().map(|d| d.name.clone()),
+                certificate_expires_at: identity.as_ref().map(|d| d.expires_at),
                 certificate_sha256: identity.map(|d| d.sha256),
                 installation: self
                     .installation

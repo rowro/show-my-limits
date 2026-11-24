@@ -398,10 +398,16 @@ fn execute() -> Result<(), String> {
                 let scope = "unknown";
                 let live = snapshot(&paths);
                 let fresh = live.as_ref().is_some_and(|state| state.profiles.iter().any(|profile| (0.0..600.0).contains(&(now() - profile.observed_at))));
-                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA file permissions: {}\nCapture live: {}\nFresh quota: {}",
+                let ca_lifetime = match certificate::details(&cert).map(|c| c.expires_at) {
+                    Some(expiry) if expiry as f64 <= now() => "expired",
+                    Some(expiry) if expiry as f64 - now() <= 30.0 * 86400.0 => "30 days or less",
+                    Some(_) => "more than 30 days",
+                    None => "unknown",
+                };
+                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA file permissions: {}\nCapture live: {}\nFresh quota: {}",
                     env!("CARGO_PKG_VERSION"), std::env::consts::OS, session,
                     if paths.helper().is_ok() { "present" } else { "missing" },
-                    if cert.is_file() { "present" } else { "missing" }, trusted, scope,
+                    if cert.is_file() { "present" } else { "missing" }, trusted, scope, ca_lifetime,
                     if certificate::security_issue(&paths.ca()).is_some() { "needs review" } else { "no issue detected" },
                     if live.is_some() { "yes" } else { "no" },
                     if fresh { "yes" } else { "no" });
@@ -417,7 +423,8 @@ fn execute() -> Result<(), String> {
                     .unwrap_or("missing".into())
             );
             if let Some(c) = certificate::details(&paths.cert()) {
-                println!("CA: {}\nSHA-256: {}", c.name, c.sha256);
+                let days = ((c.expires_at as f64 - now()) / 86400.0).ceil() as i64;
+                println!("CA: {}\nSHA-256: {}\nCA expires in: {} days", c.name, c.sha256, days);
                 if let Some(issue) = certificate::security_issue(&paths.ca()) {
                     println!("CA security: {issue}");
                 }
