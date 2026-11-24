@@ -780,8 +780,7 @@ impl Shared {
         let ready = completed
             && crate::certificate::details(&generated.join("mitmproxy-ca-cert.cer"))
                 .is_some_and(|certificate| certificate.name == "limits-mitmproxy")
-            && generated.join("mitmproxy-ca.pem").is_file()
-            && generated.join("mitmproxy-dhparam.pem").is_file();
+            && crate::certificate::complete_store(&generated);
         if ready {
             crate::certificate::secure_new_store(&generated)?;
             publish_new_ca(&generated, &self.paths.certificates)

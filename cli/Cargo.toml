@@ -17,6 +17,7 @@ tar = "0.4"
 zip = { version = "6", default-features = false, features = ["deflate"] }
 tempfile = "3"
 x509-parser = "0.18"
+ring = "0.17"
 dirs = "6"
 ctrlc = { version = "3", features = ["termination"] }
 

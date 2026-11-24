@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use ring::signature::RsaKeyPair;
 use std::{fs, path::Path};
 use x509_parser::{pem::parse_x509_pem, prelude::*};
 
@@ -76,11 +77,17 @@ pub fn complete_store(directory: &Path) -> bool {
         return false;
     }
     let Ok((remaining, key)) = parse_x509_pem(&combined) else { return false; };
-    if !matches!(key.label.as_str(), "PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY") {
+    let Ok((_, embedded_cert)) = parse_x509_pem(remaining) else { return false; };
+    if embedded_cert.label != "CERTIFICATE" || embedded_cert.contents != public_cert.contents {
         return false;
     }
-    let Ok((_, embedded_cert)) = parse_x509_pem(remaining) else { return false; };
-    embedded_cert.label == "CERTIFICATE" && embedded_cert.contents == public_cert.contents
+    let Ok((_, parsed_cert)) = X509Certificate::from_der(&public_cert.contents) else { return false; };
+    let key_pair = match key.label.as_str() {
+        "RSA PRIVATE KEY" => RsaKeyPair::from_der(&key.contents),
+        "PRIVATE KEY" => RsaKeyPair::from_pkcs8(&key.contents),
+        _ => return false,
+    };
+    key_pair.is_ok_and(|pair| pair.public().as_ref() == parsed_cert.public_key().subject_public_key.data.as_ref())
 }
 
 /// Limit access to newly generated CA material before publishing the store.
@@ -174,7 +181,7 @@ mod tests {
         assert!(!complete_store(directory.path()));
     }
     #[test]
-    fn complete_store_requires_matching_public_and_embedded_ca() {
+    fn complete_store_rejects_unrelated_private_key_and_certificate() {
         let directory = tempfile::tempdir().unwrap();
         let public = include_bytes!("../tests/fixtures/test-ca.pem");
         fs::write(directory.path().join("mitmproxy-ca-cert.cer"), public).unwrap();
@@ -182,11 +189,47 @@ mod tests {
         let mut combined = b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n".to_vec();
         combined.extend_from_slice(public);
         fs::write(directory.path().join("mitmproxy-ca.pem"), &combined).unwrap();
-        assert!(complete_store(directory.path()));
+        assert!(!complete_store(directory.path()));
         combined.truncate(b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n".len());
         combined.extend_from_slice(b"-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n");
         fs::write(directory.path().join("mitmproxy-ca.pem"), combined).unwrap();
         assert!(!complete_store(directory.path()));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn complete_store_accepts_an_ephemeral_matching_rsa_pair() {
+        use std::process::{Command, Stdio};
+        if Command::new("openssl").arg("version").output().is_err() { return; }
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().join("key.pem");
+        let cert = directory.path().join("mitmproxy-ca-cert.cer");
+        let status = Command::new("openssl")
+            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Ephemeral Test", "-days", "1", "-keyout"])
+            .arg(&key).arg("-out").arg(&cert)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        assert!(status.success());
+        let mut combined = fs::read(&key).unwrap();
+        combined.extend_from_slice(&fs::read(&cert).unwrap());
+        fs::write(directory.path().join("mitmproxy-ca.pem"), combined).unwrap();
+        fs::write(directory.path().join("mitmproxy-dhparam.pem"), b"dh parameters").unwrap();
+        assert!(complete_store(directory.path()));
+        let other_key = directory.path().join("other-key.pem");
+        let other_cert = directory.path().join("other-cert.pem");
+        let status = Command::new("openssl")
+            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Other Test", "-days", "1", "-keyout"])
+            .arg(&other_key).arg("-out").arg(&other_cert)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        assert!(status.success());
+        let mut mismatched = fs::read(other_key).unwrap();
+        mismatched.extend_from_slice(&fs::read(cert).unwrap());
+        fs::write(directory.path().join("mitmproxy-ca.pem"), mismatched).unwrap();
+        assert!(!complete_store(directory.path()));
+    }
+    #[test]
+    #[ignore = "read-only check of an explicitly provided CA store; never changes OS trust"]
+    fn real_ca_store_probe() {
+        let directory = std::env::var("SML_CA_PROBE_STORE").expect("set SML_CA_PROBE_STORE");
+        assert!(complete_store(Path::new(&directory)));
     }
     #[cfg(unix)]
     #[test]
@@ -199,7 +242,7 @@ mod tests {
         let mut combined = b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n".to_vec();
         combined.extend_from_slice(public);
         fs::write(directory.path().join("mitmproxy-ca.pem"), combined).unwrap();
-        assert!(complete_store(directory.path()));
+        assert!(!complete_store(directory.path()));
         let linked_directory = directory.path().join("linked-certificates");
         symlink(directory.path(), &linked_directory).unwrap();
         assert!(!complete_store(&linked_directory));
