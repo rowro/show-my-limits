@@ -399,6 +399,86 @@ pub fn rotation_paths(active: &Path) -> Result<(std::path::PathBuf, std::path::P
     Ok((parent.join("certificates-next"), parent.join("certificates-previous")))
 }
 
+/// Trust of the exact CA in the stores the platform check covers. `None` means
+/// it could not be checked (or no check exists on this platform).
+pub fn os_trust(path: &Path) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    { crate::macos_trust::is_trusted(path).ok() }
+    #[cfg(target_os = "windows")]
+    { crate::windows_trust::is_trusted(path).ok() }
+    #[cfg(target_os = "linux")]
+    { debian_system_trust(path) }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    { let _ = path; None }
+}
+
+pub fn os_trust_scope(path: &Path) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    { crate::macos_trust::trust_scope(path).ok().map(str::to_owned) }
+    #[cfg(target_os = "windows")]
+    { crate::windows_trust::trust_scope(path).ok().map(str::to_owned) }
+    #[cfg(target_os = "linux")]
+    { debian_system_trust(path).map(|present| if present { "system" } else { "none" }.to_owned()) }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    { let _ = path; None }
+}
+
+fn has_material(directory: &Path) -> bool {
+    match fs::symlink_metadata(directory) {
+        Err(_) => false,
+        Ok(meta) if meta.file_type().is_dir() => fs::read_dir(directory).map_or(true, |mut d| d.next().is_some()),
+        Ok(_) => true,
+    }
+}
+
+/// Public certificates in a store that a client could have been told to trust.
+fn trust_candidates(directory: &Path) -> Vec<std::path::PathBuf> {
+    [PUBLIC_CA, "mitmproxy-ca-cert.pem"].iter().map(|name| directory.join(name))
+        .filter(|path| fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file()) && details(path).is_some())
+        .collect()
+}
+
+/// A store left by an older version that never became usable: legacy format
+/// (CA key on disk) or incomplete, and none of its certificates is trusted by
+/// a checked OS store. Leaf-only stores have their own rules. `trust` returns
+/// (trusted, scope) for one certificate.
+pub fn abandoned_store(active: &Path, trust: &dyn Fn(&Path) -> (Option<bool>, Option<String>)) -> bool {
+    if !has_material(active) || store_format(active) == Some(StoreFormat::Leaf) {
+        return false;
+    }
+    let Ok((_, retired)) = rotation_paths(active) else { return false; };
+    if fs::symlink_metadata(&retired).is_ok() {
+        return false;
+    }
+    // Unknown trust (None) is never treated as untrusted.
+    trust_candidates(active).iter().all(|cert| {
+        let (trusted, scope) = trust(cert);
+        trusted == Some(false) && scope.as_deref() == Some("none")
+    })
+}
+
+/// Move an abandoned store into the retired slot, where it waits for the
+/// explicit cleanup, and publish a leaf-only store for `hosts`. Nothing is
+/// deleted here; on failure the old store is moved back.
+pub fn replace_abandoned_store(active: &Path, hosts: &[String]) -> Result<Vec<String>, String> {
+    validate_hosts(hosts)?;
+    let (_, retired) = rotation_paths(active)?;
+    if fs::symlink_metadata(&retired).is_ok() {
+        return Err("Предыдущий CA ещё ожидает очистки; сначала завершите её.".into());
+    }
+    fs::rename(active, &retired).map_err(|e| format!("Не удалось отложить прежний сертификат: {e}"))?;
+    create_leaf_store(hosts, active).or_else(|error| match fs::rename(&retired, active) {
+        Ok(()) => Err(format!("{error} Прежний сертификат возвращён на место.")),
+        Err(rollback) => Err(format!("{error} Не удалось вернуть прежний сертификат ({rollback}); он сохранён в {}.", retired.display())),
+    })
+}
+
+/// Certificate of the retired store that cleanup must check, if any is readable.
+/// A store without a readable certificate holds nothing a client could trust.
+pub fn retired_certificates(active: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    Ok(trust_candidates(&rotation_paths(active)?.1))
+}
+
 /// The caller must first stop the trial capture and prove a fresh same-run quota response.
 /// Keep the previous key until separate, explicit trust cleanup succeeds.
 pub fn promote_replacement(active: &Path) -> Result<(), String> {
@@ -554,6 +634,52 @@ mod tests {
         // An existing store is never overwritten.
         assert!(create_leaf_store(&hosts(&["ai.example.com"]), &store).is_err());
         assert_eq!(leaf_hosts(&store), Some(created));
+    }
+
+    #[test]
+    fn abandoned_store_is_moved_aside_only_when_untrusted() {
+        let root = tempfile::tempdir().unwrap();
+        let active = root.path().join("certificates");
+        let (_, retired) = rotation_paths(&active).unwrap();
+        let other = root.path().join("other");
+        create_leaf_store(&hosts(&["old.example.com"]), &other).unwrap();
+        fs::create_dir(&active).unwrap();
+        fs::copy(other.join(PUBLIC_CA), active.join(PUBLIC_CA)).unwrap();
+        fs::write(active.join(LEGACY_KEY), b"legacy key material").unwrap();
+        let untrusted = |_: &Path| (Some(false), Some("none".to_string()));
+        let trusted = |_: &Path| (Some(true), Some("user".to_string()));
+        let elsewhere = |_: &Path| (Some(false), Some("admin".to_string()));
+        let unknown = |_: &Path| (None, None);
+        assert!(!abandoned_store(&active, &trusted));
+        assert!(!abandoned_store(&active, &elsewhere));
+        assert!(!abandoned_store(&active, &unknown), "unknown trust is never treated as untrusted");
+        assert!(abandoned_store(&active, &untrusted));
+
+        assert!(replace_abandoned_store(&active, &hosts(&["10.0.0.1"])).is_err());
+        assert!(active.join(LEGACY_KEY).exists() && !retired.exists(), "invalid hosts move nothing");
+        let created = replace_abandoned_store(&active, &hosts(&["corp.example.com"])).unwrap();
+        assert_eq!(leaf_hosts(&active), Some(created));
+        assert_eq!(fs::read(retired.join(LEGACY_KEY)).unwrap(), b"legacy key material", "old key kept for explicit cleanup");
+        assert_eq!(retired_certificates(&active).unwrap(), vec![retired.join(PUBLIC_CA)]);
+        // A leaf store, and any store while cleanup is pending, stays as is.
+        assert!(!abandoned_store(&active, &untrusted));
+        assert!(replace_abandoned_store(&active, &hosts(&["corp.example.com"])).is_err());
+    }
+
+    #[test]
+    fn incomplete_store_without_certificate_is_abandoned() {
+        let root = tempfile::tempdir().unwrap();
+        let active = root.path().join("certificates");
+        let unknown = |_: &Path| (None, None);
+        assert!(!abandoned_store(&active, &unknown));
+        fs::create_dir(&active).unwrap();
+        assert!(!abandoned_store(&active, &unknown), "an empty directory is simply reused");
+        fs::write(active.join(LEGACY_KEY), b"partial").unwrap();
+        fs::write(active.join(PUBLIC_CA), b"not a certificate").unwrap();
+        assert!(abandoned_store(&active, &unknown), "nothing readable could have been trusted");
+        replace_abandoned_store(&active, &hosts(&["corp.example.com"])).unwrap();
+        assert_eq!(store_format(&active), Some(StoreFormat::Leaf));
+        assert!(retired_certificates(&active).unwrap().is_empty());
     }
 
     #[test]

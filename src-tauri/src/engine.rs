@@ -22,25 +22,39 @@ pub fn now() -> f64 {
 }
 
 fn checked_ca_trust(path: &Path) -> Option<bool> {
-    #[cfg(target_os = "macos")]
-    { crate::macos_trust::is_trusted(path).ok() }
-    #[cfg(target_os = "windows")]
-    { crate::windows_trust::is_trusted(path).ok() }
-    #[cfg(target_os = "linux")]
-    { crate::certificate::debian_system_trust(path) }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    { let _ = path; None }
+    crate::certificate::os_trust(path)
 }
 
 fn checked_ca_scope(path: &Path) -> Option<String> {
-    #[cfg(target_os = "macos")]
-    { crate::macos_trust::trust_scope(path).ok().map(str::to_owned) }
-    #[cfg(target_os = "windows")]
-    { crate::windows_trust::trust_scope(path).ok().map(str::to_owned) }
-    #[cfg(target_os = "linux")]
-    { crate::certificate::debian_system_trust(path).map(|present| if present { "system" } else { "none" }.to_owned()) }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    { let _ = path; None }
+    crate::certificate::os_trust_scope(path)
+}
+
+fn abandoned_store(active: &Path) -> bool {
+    crate::certificate::abandoned_store(active, &|cert| (checked_ca_trust(cert), checked_ca_scope(cert)))
+}
+
+/// Whether any capture in this data directory ever recorded a quota sample.
+/// Unreadable evidence counts as "yes": skipping the trial capture must never
+/// break a setup that may have worked.
+fn quotas_ever_received(proxy: &Path) -> bool {
+    let mut files = vec![proxy.join("state.json")];
+    match fs::read_dir(proxy.join("runs")) {
+        Ok(entries) => {
+            for entry in entries {
+                let Ok(entry) = entry else { return true; };
+                files.push(entry.path().join("state.json"));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return true,
+    }
+    files.iter().any(|path| match fs::symlink_metadata(path) {
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        Ok(meta) if !meta.file_type().is_file() || meta.len() > 262_144 => true,
+        Ok(_) => fs::read(path).ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .map_or(true, |state| state.get("profiles").and_then(|p| p.as_array()).is_some_and(|p| !p.is_empty())),
+    })
 }
 
 use crate::settings::normalized_processes;
@@ -113,6 +127,8 @@ pub struct SetupStatus {
     /// "leaf": CA key never stored, limited to `certificate_hosts`; "legacy": mitmproxy CA with its key.
     pub certificate_format: Option<String>,
     pub certificate_hosts: Vec<String>,
+    /// An older, never-trusted or incomplete store that the wizard replaces with a leaf-only one.
+    pub certificate_replaceable: bool,
     pub installation: Installation,
     pub install_supported: bool,
     pub launch_at_login: Option<bool>,
@@ -138,6 +154,8 @@ pub struct RotationStatus {
     pub pending_trusted: Option<bool>,
     pub pending_issue: Option<String>,
     pub pending_hosts: Vec<String>,
+    /// The active legacy CA never produced quotas, so switching needs no trial capture.
+    pub trial_optional: bool,
     pub previous_sha256: Option<String>,
     pub previous_certificate_path: Option<String>,
     pub previous_trust_scope: Option<String>,
@@ -310,7 +328,12 @@ impl Shared {
         let (pending, retired) = crate::certificate::rotation_paths(&self.paths.certificates)
             .expect("application CA path has a parent");
         let pending_complete = crate::certificate::complete_store(&pending);
-        let previous_complete = crate::certificate::complete_store(&retired);
+        // An abandoned store may be incomplete; any readable certificate still needs cleanup checks.
+        let previous_cert = crate::certificate::retired_certificates(&self.paths.certificates)
+            .ok().and_then(|certs| certs.into_iter().next());
+        let trial_optional = pending_complete
+            && crate::certificate::store_format(&self.paths.certificates) == Some(crate::certificate::StoreFormat::Legacy)
+            && !quotas_ever_received(&self.paths.proxy);
         let rotation = RotationStatus {
             phase: if fs::symlink_metadata(&retired).is_ok() && !crate::certificate::complete_store(&self.paths.certificates) { "interrupted" }
                 else if fs::symlink_metadata(&retired).is_ok() { "cleanup" }
@@ -322,9 +345,10 @@ impl Shared {
             pending_trusted: pending_complete.then(|| checked_ca_trust(&pending.join("mitmproxy-ca-cert.cer"))).flatten(),
             pending_issue: crate::certificate::security_issue(&pending).map(str::to_owned),
             pending_hosts: crate::certificate::leaf_hosts(&pending).unwrap_or_default(),
-            previous_sha256: previous_complete.then(|| crate::certificate::details(&retired.join("mitmproxy-ca-cert.cer"))).flatten().map(|d| d.sha256),
-            previous_certificate_path: previous_complete.then(|| retired.join("mitmproxy-ca-cert.cer").display().to_string()),
-            previous_trust_scope: previous_complete.then(|| checked_ca_scope(&retired.join("mitmproxy-ca-cert.cer"))).flatten(),
+            previous_sha256: previous_cert.as_deref().and_then(crate::certificate::details).map(|d| d.sha256),
+            previous_certificate_path: previous_cert.as_ref().map(|path| path.display().to_string()),
+            previous_trust_scope: previous_cert.as_deref().and_then(checked_ca_scope),
+            trial_optional,
             trial_ready,
         };
         let connection_issue = state.health.as_ref().filter(|health| active && timestamp - health.observed_at < 120.0
@@ -408,6 +432,7 @@ impl Shared {
                 certificate_sha256: identity.map(|d| d.sha256),
                 certificate_format: crate::certificate::store_format(&self.paths.certificates).map(|f| f.as_str().to_owned()),
                 certificate_hosts: crate::certificate::leaf_hosts(&self.paths.certificates).unwrap_or_default(),
+                certificate_replaceable: abandoned_store(&self.paths.certificates),
                 installation: self
                     .installation
                     .lock()
@@ -802,7 +827,9 @@ impl Shared {
 
     pub fn promote_replacement(&self, app: &AppHandle) -> Result<(), String> {
         let status = self.status(app);
-        if status.rotation.phase != "testing" || !status.rotation.trial_ready {
+        let tested = status.rotation.phase == "testing" && status.rotation.trial_ready;
+        let skippable = status.rotation.trial_optional && matches!(status.rotation.phase.as_str(), "pending" | "testing");
+        if !tested && !skippable {
             return Err("Дождитесь свежего ответа клиента в пробном захвате новым CA.".into());
         }
         if status.rotation.pending_trusted != Some(true) {
@@ -838,21 +865,24 @@ impl Shared {
         if !crate::certificate::complete_store(&self.paths.certificates) {
             return Err("Действующий CA повреждён; старый ключ сохранён для восстановления.".into());
         }
-        if !crate::certificate::complete_store(&retired) {
-            return Err("Прежний CA повреждён или уже удалён. Проверьте его вручную.".into());
+        if fs::symlink_metadata(&retired).is_err() {
+            return Err("Прежний CA уже удалён.".into());
         }
-        let old_cert = retired.join("mitmproxy-ca-cert.cer");
-        if checked_ca_scope(&old_cert).as_deref() != Some("none")
-            || checked_ca_trust(&old_cert) != Some(false) {
-            return Err("Прежнему CA всё ещё доверяет проверенное хранилище ОС или проверить доверие не удалось. Удалите доверие к точному отпечатку и повторите.".into());
-        }
-        #[cfg(target_os = "macos")]
-        if crate::macos_trust::present_in_checked_keychains(&old_cert)? {
-            return Err("Прежний CA всё ещё находится в связке Вход или Система. Удалите сертификат по точному отпечатку и повторите.".into());
-        }
-        #[cfg(target_os = "linux")]
-        if crate::certificate::debian_source_trust(&old_cert) != Some(false) {
-            return Err("Файл прежнего CA ещё находится в источниках доверия Debian/Ubuntu или их не удалось проверить. Удалите точный файл и обновите сертификаты ОС.".into());
+        // An incomplete store from an older version may have no readable
+        // certificate at all; then nothing could have been trusted.
+        for old_cert in crate::certificate::retired_certificates(&self.paths.certificates)? {
+            if checked_ca_scope(&old_cert).as_deref() != Some("none")
+                || checked_ca_trust(&old_cert) != Some(false) {
+                return Err("Прежнему CA всё ещё доверяет проверенное хранилище ОС или проверить доверие не удалось. Удалите доверие к точному отпечатку и повторите.".into());
+            }
+            #[cfg(target_os = "macos")]
+            if crate::macos_trust::present_in_checked_keychains(&old_cert)? {
+                return Err("Прежний CA всё ещё находится в связке Вход или Система. Удалите сертификат по точному отпечатку и повторите.".into());
+            }
+            #[cfg(target_os = "linux")]
+            if crate::certificate::debian_source_trust(&old_cert) != Some(false) {
+                return Err("Файл прежнего CA ещё находится в источниках доверия Debian/Ubuntu или их не удалось проверить. Удалите точный файл и обновите сертификаты ОС.".into());
+            }
         }
         fs::remove_dir_all(&retired).map_err(|e| format!("Не удалось удалить закрытый ключ прежнего CA: {e}"))?;
         Ok(())
@@ -905,6 +935,16 @@ impl Shared {
             .map_err(|_| "Настройки заняты.")?
             .settings
             .clone();
+        let is_active = destination == self.paths.certificates.as_path();
+        if is_active && abandoned_store(destination) {
+            // An older version left a CA that nobody trusts (or an incomplete one).
+            // Move it aside for explicit cleanup instead of asking to trust its key.
+            crate::certificate::replace_abandoned_store(destination, &settings.hosts)?;
+            let mut settings = settings;
+            settings.certificate_trust_confirmed = false;
+            return self.save_settings(settings).map(|_| ())
+                .map_err(|e| format!("Сертификат создан, но не удалось сохранить настройки: {e}"));
+        }
         if destination.join(crate::certificate::PUBLIC_CA).is_file() {
             let Some(format) = crate::certificate::store_format(destination) else {
                 return Err("Хранилище CA неполное, содержит ссылку или закрытый ключ не соответствует сертификату. Существующие файлы сохранены без изменений.".into());
@@ -917,7 +957,6 @@ impl Shared {
             // A leaf-only store holds no CA key. Before anyone trusts it, a server
             // change may recreate it; once trusted, only the explicit replacement does.
             let certificate = destination.join(crate::certificate::PUBLIC_CA);
-            let is_active = destination == self.paths.certificates.as_path();
             if (is_active && settings.certificate_trust_confirmed)
                 || checked_ca_trust(&certificate) != Some(false)
                 || checked_ca_scope(&certificate).as_deref() != Some("none") {
@@ -1295,6 +1334,24 @@ mod tests {
             assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
         }
     }
+    #[test]
+    fn quota_evidence_is_conservative() {
+        let root = tempfile::tempdir().unwrap();
+        let proxy = root.path();
+        assert!(!quotas_ever_received(proxy));
+        let run = proxy.join("runs/1-2");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(run.join("state.json"), r#"{"runId":"1-2","profiles":[]}"#).unwrap();
+        assert!(!quotas_ever_received(proxy));
+        fs::create_dir_all(proxy.join("runs/empty")).unwrap();
+        assert!(!quotas_ever_received(proxy), "a run that never wrote state proves nothing");
+        fs::write(run.join("state.json"), b"{").unwrap();
+        assert!(quotas_ever_received(proxy), "unreadable evidence must not allow skipping the trial");
+        fs::write(run.join("state.json"), r#"{"profiles":[]}"#).unwrap();
+        fs::write(proxy.join("state.json"), r#"{"profiles":[{"host":"corp.example.com"}]}"#).unwrap();
+        assert!(quotas_ever_received(proxy), "the pre-run shared state of older versions counts");
+    }
+
     #[test]
     fn automatic_capture_requires_completed_setup() {
         let mut state = AppStatus {

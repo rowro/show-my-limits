@@ -37,7 +37,7 @@ let renderedView = "";
 let renderedMarkup = "";
 let state: Status = { settings: { theme: "system", hosts: [], clients: ["desktop", "terminal"], additionalProcesses: [], selectedProfile: null, helperPath: "", certificateTrustConfirmed: false },
   profiles: [], capture: { phase: "stopped", pid: null, startedAt: null, error: null, observation: null },
-  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: null, certificateSha256: null, certificateExpiresAt: null, certificateFormat: null, certificateHosts: [], installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, rotation: { phase: "none", pendingSha256: null, pendingCertificatePath: null, pendingTrusted: null, pendingIssue: null, pendingHosts: [], previousSha256: null, previousCertificatePath: null, previousTrustScope: null, trialReady: false }, connectionIssue: null, now: Date.now() / 1000 };
+  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: null, certificateSha256: null, certificateExpiresAt: null, certificateFormat: null, certificateHosts: [], certificateReplaceable: false, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, rotation: { phase: "none", pendingSha256: null, pendingCertificatePath: null, pendingTrusted: null, pendingIssue: null, pendingHosts: [], previousSha256: null, previousCertificatePath: null, previousTrustScope: null, trialReady: false, trialOptional: false }, connectionIssue: null, now: Date.now() / 1000 };
 if (demo) { state = demoStatus(); view = "overview";
   if (new URLSearchParams(location.search).get("demo") === "setup") {
     state.settings.hosts = []; state.profiles = []; state.capture.phase = "stopped"; state.capture.startedAt = null; view = "setup";
@@ -220,6 +220,11 @@ function certificateScope(inSettings = false) {
   return `<p class="field-help">Сертификат действует только для <strong>${esc(hosts.join(", "))}</strong>; закрытый ключ CA не хранится.</p>${missing.length ? `<div class="ca-scope-warning" role="note"><strong>Сертификат выпущен для другого сервера</strong><p>Выбран ${esc(missing.join(", "))}. ${inSettings ? "Начни замену CA ниже: новый сертификат будет выпущен для выбранного сервера." : "Вернись к выбору сервера или создай замену CA в настройках."}</p></div>` : ""}`;
 }
 
+function previousCaNote() {
+  const untrusted = state.rotation.previousTrustScope === "none" || !state.rotation.previousSha256;
+  return `<div class="ca-scope-warning" role="note"><strong>Старый сертификат отложен</strong><p>${untrusted ? "Ему не доверяют проверенные хранилища ОС, но его закрытый ключ ещё на диске." : "Ему ещё доверяет хранилище ОС. Удалите доверие по отпечатку в настройках «Захват»."} Ключ удаляется только после проверки.</p><button type="button" class="secondary" data-action="finish-replacement-cleanup" ${busy ? "disabled" : ""}>Удалить старый ключ</button></div>`;
+}
+
 function restartClientsNote() {
   return `<p class="field-help restart-note">После установки доверия полностью перезапусти Claude Desktop и открытые сессии Claude Code (терминал, IDE): уже запущенные процессы не узнают о новом сертификате и отклонят соединение.</p>`;
 }
@@ -246,7 +251,8 @@ function linuxCertificateHelp(confirm = true) {
 }
 
 function setup() {
-  const ready = state.setup.certificateExists;
+  // A never-trusted or incomplete CA from an older version is replaced, not offered for trust.
+  const ready = state.setup.certificateExists && !state.setup.certificateReplaceable;
   const helper = !!state.setup.helperPath;
   const trusted = certificateTrusted(state);
   const configured = state.settings.hosts.length > 0;
@@ -267,7 +273,7 @@ function setup() {
     : `<details class="manual-certificate"><summary>Установить вручную</summary><div class="trust-guide">${trust}</div><button class="secondary" data-action="open-certificate" ${!ready || busy ? "disabled" : ""}>${icon("shield")}${state.setup.platform === "macos" ? "Импортировать сертификат" : "Открыть сертификат"}</button><button class="text-button setup-link" data-action="reveal-certificate" ${!ready || busy ? "disabled" : ""}>Показать файл</button></details>`;
   const host = state.settings.hosts[0] || "";
   const certificateStatus = !ready
-    ? `<p>${busy && pendingAction === "prepare-certificate" ? `Создаём сертификат для ${esc(host)}…` : `Сертификат для <strong>${esc(host)}</strong> ещё не создан.`}</p><p class="field-help">Сертификат будет действовать только для этого сервера. Закрытый ключ удостоверяющего центра не сохраняется.</p>${busy ? "" : `<button class="secondary" data-action="prepare-certificate">Создать сертификат</button>`}`
+    ? `<p>${busy && pendingAction === "prepare-certificate" ? `Создаём сертификат для ${esc(host)}…` : state.setup.certificateReplaceable ? `Сертификат прошлой версии не настроен или повреждён. Создадим новый для <strong>${esc(host)}</strong>; старый будет отложен.` : `Сертификат для <strong>${esc(host)}</strong> ещё не создан.`}</p><p class="field-help">Сертификат будет действовать только для этого сервера. Закрытый ключ удостоверяющего центра не сохраняется.</p>${busy ? "" : `<button class="secondary" data-action="prepare-certificate">Создать сертификат</button>`}`
     : certificateScope();
   const steps = [
     `<section class="setup-step"><span class="step-number ${helper ? "done" : ""}">${helper ? icon("check") : "1"}</span><div><h3>Подготовка</h3><p>${!helper ? installing ? progress : busy ? "Ищем mitmproxy и готовим загрузку…" : setupError ? "Подготовка остановлена." : "Ищем mitmproxy…" : "Перехватчик готов."}</p><p class="field-help">Приложение само найдёт mitmdump или загрузит проверенную версию.</p>${!busy && !helper ? `<button class="secondary" data-action="prepare-setup">Повторить подготовку</button>` : ""}${!state.setup.installSupported && !helper ? '<p class="field-help">Для этой архитектуры укажи установленный mitmdump вручную.</p>' : ""}${showManualHelper ? `<details><summary>Указать свой mitmdump</summary><form id="helper-form"><input name="helperPath" aria-label="Путь к mitmdump" placeholder="Путь к mitmdump"/><button class="secondary setup-link" type="submit">Использовать</button></form></details>` : ""}${helper ? `<details class="helper-location"><summary>Где установлен</summary><p class="helper-path">${esc(state.setup.helperPath)}</p></details>` : ""}</div></section>`,
@@ -280,6 +286,7 @@ function setup() {
     ${ready ? systemTrustWarning() : ""}
     ${ready ? manualTrust : ""}
     ${ready ? restartClientsNote() : ""}
+    ${state.rotation.phase === "cleanup" ? previousCaNote() : ""}
     <p class="subtle">Получение нового ответа Claude подтвердит, что клиент доверяет сертификату.</p></div></section>`
   ];
   return `<div class="wizard-heading"><span class="wizard-caption">Подключение · шаг ${setupStep + 1} из 3</span><div class="wizard-progress" aria-label="Шаг ${setupStep + 1} из 3">${steps.map((_, i) => `<i class="${i <= setupStep ? "active" : ""}"></i>`).join("")}</div></div>${steps[setupStep]}`;
@@ -298,11 +305,12 @@ function rotationPanel() {
   const current = esc(state.setup.certificateSha256 || "не удалось прочитать");
   if (r.phase === "interrupted") return `<fieldset><legend>Замена CA прервана</legend><p class="field-help">Прежний CA сохранён отдельно. Восстановление вернёт его в действующий каталог; новый CA останется подготовленным для повторной проверки.</p><button type="button" class="secondary" data-action="restore-interrupted-replacement" ${busy ? "disabled" : ""}>Восстановить прежний CA</button></fieldset>`;
   if (r.phase === "none") return `<fieldset><legend>Замена CA</legend><p class="field-help">Новый CA выпускается только для выбранного сервера, его закрытый ключ не сохраняется. Действующий CA остаётся на месте, пока новый не получит доверие и свежий ответ клиента. После переключения старое доверие удаляется отдельно.</p><button type="button" class="secondary" data-action="prepare-replacement" ${busy ? "disabled" : ""}>Начать замену CA</button></fieldset>`;
+  if (r.phase === "cleanup" && (r.previousTrustScope === "none" || !r.previousSha256)) return `<fieldset><legend>Очистка старого CA</legend><p class="field-help">Новый CA активен. Прежнему сертификату не доверяют проверенные хранилища ОС, но его закрытый ключ ещё на диске.</p>${r.previousSha256 ? `<code class="fingerprint">${esc(r.previousSha256)}</code>` : ""}<p class="field-help">Перед удалением ключа приложение ещё раз проверит доверие${state.setup.platform === "macos" ? " и наличие сертификата в Связке ключей" : ""}.</p><button type="button" class="secondary" data-action="finish-replacement-cleanup" ${busy ? "disabled" : ""}>Удалить старый ключ</button></fieldset>`;
   if (r.phase === "cleanup") return `<fieldset><legend>Очистка старого CA</legend><p class="field-help">Новый CA активен. Удалите доверие к прежнему сертификату с точным SHA-256:</p><code class="fingerprint">${esc(r.previousSha256 || "не удалось прочитать")}</code><p class="field-help">Область старого доверия: <strong>${esc(r.previousTrustScope || "не удалось проверить")}</strong>. ${state.setup.platform === "linux" ? "В Debian/Ubuntu удалите прежний файл из /usr/local/share/ca-certificates и выполните sudo update-ca-certificates. Если имя файла другое, найдите его по отпечатку." : state.setup.platform === "macos" ? "Удалите прежний сертификат по отпечатку из Связки ключей (Вход и/или Система). Системное удаление может потребовать подтверждения macOS." : "Удалите прежний сертификат по отпечатку из хранилища Current User или Local Machine Root."}</p><p class="field-help">Закрытый ключ прежнего CA будет удалён только после проверки, что старое доверие отсутствует в проверенных хранилищах.</p><button type="button" class="secondary" data-action="finish-replacement-cleanup" ${busy ? "disabled" : ""}>Проверить удаление и завершить</button></fieldset>`;
   const newHash = esc(r.pendingSha256 || "не удалось прочитать");
   const trust = r.pendingTrusted === true ? "Новое доверие подтверждено" : r.pendingTrusted === false ? "Новому CA ещё не доверяют" : "Доверие к новому CA не удалось проверить";
   const trustAction = state.setup.platform === "linux" && r.pendingCertificatePath && r.pendingSha256 ? `<p class="field-help">Установите новый CA отдельно от старого. Команды добавят системное доверие:</p><pre class="trust-command"><code>${esc(linuxReplacementTrustCommands(r.pendingCertificatePath, r.pendingSha256))}</code></pre><button type="button" class="secondary" data-action="copy-replacement-trust">Скопировать команды</button>` : state.setup.platform === "linux" ? "" : `<button type="button" class="secondary" data-action="install-replacement-certificate" ${busy ? "disabled" : ""}>Установить доверие к новому CA</button>`;
-  return `<fieldset><legend>Замена CA</legend><p class="field-help">Выбранный сервер: <strong>${esc(state.settings.hosts[0] || "не указан")}</strong>. При необходимости измените его в поле «Сервер» ниже и сохраните настройки до проверки.</p><p class="field-help">Действующий CA: <code class="fingerprint">${current}</code></p><p class="field-help">Новый CA${r.pendingHosts.length ? ` для <strong>${esc(r.pendingHosts.join(", "))}</strong>` : ""}: <code class="fingerprint">${newHash}</code></p><p class="field-help"><strong>${trust}</strong>. ${esc(r.pendingIssue || "Старый ключ и доверие пока не менялись.")}</p>${r.pendingTrusted === true ? "" : trustAction}${r.phase === "testing" ? `<p class="field-help">Пробный захват новым CA ${r.trialReady ? "получил свежий ответ с лимитами" : "ждёт свежий ответ с лимитами"}. Полностью перезапустите клиент и отправьте сообщение на указанный сервер.</p><button type="button" class="secondary" data-action="promote-replacement" ${busy || !r.trialReady ? "disabled" : ""}>Сделать новый CA действующим</button><button type="button" class="text-button" data-action="stop-replacement-trial" ${busy ? "disabled" : ""}>Вернуться к старому захвату</button>` : `<button type="button" class="secondary" data-action="start-replacement-trial" ${busy || r.pendingTrusted !== true ? "disabled" : ""}>Проверить новый CA в захвате</button>`}</fieldset>`;
+  return `<fieldset><legend>Замена CA</legend><p class="field-help">Выбранный сервер: <strong>${esc(state.settings.hosts[0] || "не указан")}</strong>. При необходимости измените его в поле «Сервер» ниже и сохраните настройки до проверки.</p><p class="field-help">Действующий CA: <code class="fingerprint">${current}</code></p><p class="field-help">Новый CA${r.pendingHosts.length ? ` для <strong>${esc(r.pendingHosts.join(", "))}</strong>` : ""}: <code class="fingerprint">${newHash}</code></p><p class="field-help"><strong>${trust}</strong>. ${esc(r.pendingIssue || "Старый ключ и доверие пока не менялись.")}</p>${r.pendingTrusted === true ? "" : trustAction}${r.phase === "testing" ? `<p class="field-help">Пробный захват новым CA ${r.trialReady ? "получил свежий ответ с лимитами" : "ждёт свежий ответ с лимитами"}. Полностью перезапустите клиент и отправьте сообщение на указанный сервер.</p><button type="button" class="secondary" data-action="promote-replacement" ${busy || !(r.trialReady || r.trialOptional) ? "disabled" : ""}>Сделать новый CA действующим</button><button type="button" class="text-button" data-action="stop-replacement-trial" ${busy ? "disabled" : ""}>Вернуться к старому захвату</button>` : `<button type="button" class="secondary" data-action="start-replacement-trial" ${busy || r.pendingTrusted !== true ? "disabled" : ""}>Проверить новый CA в захвате</button>${r.trialOptional ? `<p class="field-help">Со старым CA захват ни разу не получил лимиты, поэтому проверку можно пропустить.</p><button type="button" class="secondary" data-action="promote-replacement" ${busy || r.pendingTrusted !== true ? "disabled" : ""}>Сделать новый CA действующим без проверки</button>` : ""}`}</fieldset>`;
 }
 
 function settings() {
@@ -394,7 +402,8 @@ async function prepareCertificate() {
   busy = true; pendingAction = "prepare-certificate"; toast = null; render();
   try {
     if (!native) {
-      state.setup.certificateExists = true; state.setup.certificateFormat = "leaf";
+      if (state.setup.certificateReplaceable) { state.rotation.phase = "cleanup"; state.rotation.previousTrustScope = "none"; state.rotation.previousSha256 = "9C:41:" + "0D:".repeat(29) + "7E"; }
+      state.setup.certificateExists = true; state.setup.certificateFormat = "leaf"; state.setup.certificateReplaceable = false;
       state.setup.certificateHosts = state.settings.hosts.map(h => h.toLowerCase());
     } else {
       await invoke("prepare_certificate");
@@ -596,7 +605,7 @@ root.addEventListener("submit", async event => {
     if (form.id === "setup-form") {
       // The certificate is issued for this server: create it before the trust step.
       setupDraft = null; setupStep = 2; busy = false;
-      if (!state.setup.certificateExists || uncoveredHosts(state).length) await prepareCertificate();
+      if (!state.setup.certificateExists || state.setup.certificateReplaceable || uncoveredHosts(state).length) await prepareCertificate();
     } else if (needsSetup(state)) view = "setup";
     else if (form.id === "settings-form") { settingsDraft = null; view = "overview"; }
   } catch (error) { toast = String(error); }
@@ -636,8 +645,8 @@ root.addEventListener("change", async event => {
 const devScenes = [
   ["limits", "Лимиты"], ["low", "Лимиты заканчиваются"], ["exhausted", "Лимит исчерпан"], ["stale", "Устаревшие данные"],
   ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["system-ca", "CA в системе"], ["stopped", "Перехват выключен"], ["capture-error", "Ошибка запуска захвата"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
-  ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Сервер и процессы"], ["setup-2", "3 · Сертификат и доверие"], ["settings-legacy", "Настройки · старый CA"],
-  ["rotation-pending", "CA · подготовлен"], ["rotation-testing", "CA · проверка"], ["rotation-ready", "CA · ответ получен"], ["rotation-cleanup", "CA · очистка"], ["rotation-interrupted", "CA · восстановление"],
+  ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Сервер и процессы"], ["setup-2", "3 · Сертификат и доверие"], ["setup-old-2", "3 · Старый недоверенный CA"], ["settings-legacy", "Настройки · старый CA"],
+  ["rotation-pending", "CA · подготовлен"], ["rotation-testing", "CA · проверка"], ["rotation-ready", "CA · ответ получен"], ["rotation-untried", "CA · без пробы (лимитов не было)"], ["rotation-cleanup", "CA · очистка"], ["rotation-interrupted", "CA · восстановление"],
 ];
 function setDevScene(scene: string) {
   if (!devTools) return;
@@ -658,7 +667,9 @@ function setDevScene(scene: string) {
     state.setup.certificateSha256 = "8A:72:" + "CD:".repeat(29) + "E4";
     state.rotation.pendingSha256 = "4F:19:" + "AB:".repeat(29) + "91";
     state.rotation.pendingCertificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates-next/mitmproxy-ca-cert.cer";
-    state.rotation.phase = scene.slice("rotation-".length) === "ready" ? "testing" : scene.slice("rotation-".length);
+    const rotationScene = scene.slice("rotation-".length);
+    state.rotation.phase = rotationScene === "ready" ? "testing" : rotationScene === "untried" ? "pending" : rotationScene;
+    state.rotation.trialOptional = rotationScene === "untried";
     state.rotation.pendingTrusted = scene !== "rotation-pending";
     state.rotation.trialReady = scene === "rotation-ready";
     if (scene === "rotation-testing") state.profiles = [];
@@ -694,6 +705,7 @@ function setDevScene(scene: string) {
     state.setup.helperPath = setupStep > 0 ? "/example/mitmdump" : null;
     state.setup.certificateExists = setupStep > 1;
     state.settings.certificateTrustConfirmed = false; state.setup.certificateTrusted = false;
+    if (scene === "setup-old-2") { state.setup.certificateFormat = "legacy"; state.setup.certificateHosts = []; state.setup.certificateReplaceable = true; }
   }
   sessionStorage.setItem("sml-dev-scene", scene);
   const url = new URL(location.href); url.searchParams.set("screen", scene);
@@ -749,6 +761,8 @@ if (native) {
   await listen<UpdateStatus>("show-my-limits://update", event => { updateState=event.payload; renderFooter(); });
   await refresh();
   if (needsSetup(state) && requiredSetupStep() === 0) void prepareSetup();
+  // Users of an older version may arrive straight at the trust step with an unusable CA.
+  else if (needsSetup(state) && requiredSetupStep() === 2 && state.setup.certificateReplaceable) void prepareCertificate();
   if (state.setup.platform === "linux") {
     try { gnomeStatus = await invoke<GnomeStatus>("gnome_status"); } catch { /* ordinary tray remains available */ }
   }

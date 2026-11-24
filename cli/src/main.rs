@@ -117,6 +117,20 @@ fn setup(paths: &Paths, override_hosts: Vec<String>) -> Result<(), String> {
             eprintln!("mitmproxy: {}", p.phase);
         })?;
     }
+    let hosts = if override_hosts.is_empty() { paths.settings()?.hosts } else { override_hosts };
+    // An older version may have left a CA nobody trusts, or an incomplete store.
+    // Move it aside (never delete) instead of asking to trust a CA with a stored key.
+    if certificate::abandoned_store(&paths.ca(), &|cert| (certificate::os_trust(cert), certificate::os_trust_scope(cert))) {
+        if hosts.is_empty() {
+            return Err("Provide sml setup --host DOMAIN to replace the untrusted CA left by an older version.".into());
+        }
+        let covered = certificate::replace_abandoned_store(&paths.ca(), &hosts)?;
+        let (_, retired) = certificate::rotation_paths(&paths.ca())?;
+        println!("The previous CA was not trusted by checked OS stores; moved to {}.", retired.display());
+        println!("Delete that directory after confirming nothing trusts it, or finish cleanup in the app.");
+        println!("CA prepared for {}. Run sml trust, then restart the client.", covered.join(", "));
+        return Ok(());
+    }
     if paths.cert().is_file() {
         let format = certificate::store_format(&paths.ca()).ok_or(
             "The CA store is incomplete, symlinked, or its private key does not match the certificate. Existing material was preserved; inspect it before restoring from backup.")?;
@@ -135,7 +149,6 @@ fn setup(paths: &Paths, override_hosts: Vec<String>) -> Result<(), String> {
         return Err("Existing CA material is incomplete; preserved without changes. Repair it before setup.".into());
     }
     // The CA is limited to the configured servers; its private key is never stored.
-    let hosts = if override_hosts.is_empty() { paths.settings()?.hosts } else { override_hosts };
     if hosts.is_empty() {
         return Err("Provide sml setup --host DOMAIN, or configure a server in the app first.".into());
     }
