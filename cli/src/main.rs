@@ -120,7 +120,7 @@ fn setup(paths: &Paths) -> Result<(), String> {
     };
     if paths.cert().is_file() {
         if !certificate::complete_store(&paths.ca()) {
-            return Err("Incomplete CA store; existing material was preserved. Restore the missing files from backup.".into());
+            return Err("The CA store is incomplete, symlinked or its certificate files do not match. Existing material was preserved; inspect it before restoring from backup.".into());
         }
         println!("Reusing certificate: {}", paths.cert().display());
         return Ok(());
@@ -498,12 +498,16 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
                     *host = settings::normalize_host(host)?;
                 }
                 if !certificate::complete_store(&paths.ca()) {
-                    return Err("Run sml setup and sml trust first. An incomplete existing CA store must be restored from backup.".into());
+                    return Err("The CA store is incomplete, symlinked or its certificate files do not match. Existing material was preserved; inspect it before restoring from backup.".into());
                 }
                 if !trusted(&paths.cert())? {
                     return Err(
                         "The CA is not trusted. Run sml trust, then restart your client.".into(),
                     );
+                }
+                #[cfg(target_os = "linux")]
+                if certificate::debian_system_trust(&paths.cert()) == Some(false) {
+                    eprintln!("CA is absent from the Debian/Ubuntu system bundle. If this client uses that bundle, run sml trust and its printed commands, then restart the client. Other trust stores are not checked.");
                 }
                 capture_conflict::ensure_exclusive()?;
                 let helper = paths.helper()?;

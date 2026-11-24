@@ -516,7 +516,7 @@ impl Shared {
             return Err("Сначала создайте сертификат в мастере первоначальной настройки.".into());
         }
         if !crate::certificate::complete_store(&self.paths.certificates) {
-            return Err("Хранилище сертификата неполное. Существующие файлы сохранены; восстановите сертификат и ключ из резервной копии.".into());
+            return Err("Хранилище CA неполное, содержит ссылку или файлы сертификата не совпадают. Существующие файлы сохранены; проверьте их перед восстановлением из резервной копии.".into());
         }
         let helper = self
             .find_helper(app, &inner.settings)
@@ -701,7 +701,7 @@ impl Shared {
             .is_file()
         {
             return if crate::certificate::complete_store(&self.paths.certificates) { Ok(()) } else {
-                Err("Хранилище сертификата неполное. Существующие файлы сохранены без изменений.".into())
+                Err("Хранилище CA неполное, содержит ссылку или файлы сертификата не совпадают. Существующие файлы сохранены без изменений.".into())
             };
         }
         let settings = self

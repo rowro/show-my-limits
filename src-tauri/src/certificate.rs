@@ -9,6 +9,7 @@ pub struct CertificateDetails {
 
 fn parse(bytes: &[u8]) -> Option<CertificateDetails> {
     let (_, pem) = parse_x509_pem(bytes).ok()?;
+    if pem.label != "CERTIFICATE" { return None; }
     let (_, cert) = X509Certificate::from_der(&pem.contents).ok()?;
     let name = cert
         .subject()
@@ -57,9 +58,26 @@ pub fn debian_system_trust(cert_path: &Path) -> Option<bool> {
 
 /// Refuse to let a helper regenerate a partially deleted existing CA.
 pub fn complete_store(directory: &Path) -> bool {
-    details(&directory.join("mitmproxy-ca-cert.cer")).is_some()
-        && ["mitmproxy-ca.pem", "mitmproxy-dhparam.pem"].iter().all(|name|
-            fs::metadata(directory.join(name)).is_ok_and(|m| m.is_file() && m.len() > 0))
+    let public_path = directory.join("mitmproxy-ca-cert.cer");
+    let combined_path = directory.join("mitmproxy-ca.pem");
+    let dh_path = directory.join("mitmproxy-dhparam.pem");
+    if ![&public_path, &combined_path, &dh_path].iter().all(|path|
+        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file() && m.len() > 0 && m.len() <= 64 * 1024)) {
+        return false;
+    }
+    let (Ok(public), Ok(combined)) = (fs::read(public_path), fs::read(combined_path)) else {
+        return false;
+    };
+    let Ok((_, public_cert)) = parse_x509_pem(&public) else { return false; };
+    if public_cert.label != "CERTIFICATE" || X509Certificate::from_der(&public_cert.contents).is_err() {
+        return false;
+    }
+    let Ok((remaining, key)) = parse_x509_pem(&combined) else { return false; };
+    if !matches!(key.label.as_str(), "PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY") {
+        return false;
+    }
+    let Ok((_, embedded_cert)) = parse_x509_pem(remaining) else { return false; };
+    embedded_cert.label == "CERTIFICATE" && embedded_cert.contents == public_cert.contents
 }
 
 /// Limit access to newly generated CA material before publishing the store.
@@ -150,6 +168,33 @@ mod tests {
     fn public_certificate_alone_is_not_a_complete_store() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("mitmproxy-ca-cert.cer"), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        assert!(!complete_store(directory.path()));
+    }
+    #[test]
+    fn complete_store_requires_matching_public_and_embedded_ca() {
+        let directory = tempfile::tempdir().unwrap();
+        let public = include_bytes!("../tests/fixtures/test-ca.pem");
+        fs::write(directory.path().join("mitmproxy-ca-cert.cer"), public).unwrap();
+        fs::write(directory.path().join("mitmproxy-dhparam.pem"), b"dh parameters").unwrap();
+        let mut combined = b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n".to_vec();
+        combined.extend_from_slice(public);
+        fs::write(directory.path().join("mitmproxy-ca.pem"), &combined).unwrap();
+        assert!(complete_store(directory.path()));
+        combined.truncate(b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n".len());
+        combined.extend_from_slice(b"-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n");
+        fs::write(directory.path().join("mitmproxy-ca.pem"), combined).unwrap();
+        assert!(!complete_store(directory.path()));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn complete_store_rejects_symlinked_key() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("mitmproxy-ca-cert.cer"), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        fs::write(directory.path().join("mitmproxy-dhparam.pem"), b"dh parameters").unwrap();
+        let key = directory.path().join("key.pem");
+        fs::write(&key, b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n").unwrap();
+        symlink(key, directory.path().join("mitmproxy-ca.pem")).unwrap();
         assert!(!complete_store(directory.path()));
     }
     #[test]
