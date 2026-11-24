@@ -1,6 +1,6 @@
 [package]
 name = "sml"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "Show My Limits terminal quota monitor"
 authors = ["rowro <rowro.dev@gmail.com>"]
