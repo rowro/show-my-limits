@@ -115,6 +115,11 @@ pub fn secure_new_store(directory: &Path) -> Result<(), String> {
 
 /// Report insecure permissions without changing an existing CA or its key.
 pub fn security_issue(directory: &Path) -> Option<&'static str> {
+    let has_material = ["mitmproxy-ca-cert.cer", "mitmproxy-ca.pem", "mitmproxy-dhparam.pem"]
+        .iter().any(|name| fs::symlink_metadata(directory.join(name)).is_ok());
+    if has_material && !complete_store(directory) {
+        return Some("Хранилище CA неполное, содержит ссылку или закрытый ключ не соответствует сертификату. Существующие файлы не изменены.");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -191,6 +196,7 @@ mod tests {
         combined.extend_from_slice(public);
         fs::write(directory.path().join("mitmproxy-ca.pem"), &combined).unwrap();
         assert!(!complete_store(directory.path()));
+        assert!(security_issue(directory.path()).unwrap().contains("ключ не соответствует"));
         combined.truncate(b"-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----\n".len());
         combined.extend_from_slice(b"-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n");
         fs::write(directory.path().join("mitmproxy-ca.pem"), combined).unwrap();

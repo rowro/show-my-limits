@@ -120,7 +120,7 @@ fn setup(paths: &Paths) -> Result<(), String> {
     };
     if paths.cert().is_file() {
         if !certificate::complete_store(&paths.ca()) {
-            return Err("The CA store is incomplete, symlinked or its certificate files do not match. Existing material was preserved; inspect it before restoring from backup.".into());
+            return Err("The CA store is incomplete, symlinked, or its private key does not match the certificate. Existing material was preserved; inspect it before restoring from backup.".into());
         }
         println!("Reusing certificate: {}", paths.cert().display());
         return Ok(());
@@ -404,7 +404,7 @@ fn execute() -> Result<(), String> {
                     Some(_) => "more than 30 days",
                     None => "unknown",
                 };
-                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA file permissions: {}\nCapture live: {}\nFresh quota: {}",
+                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture live: {}\nFresh quota: {}",
                     env!("CARGO_PKG_VERSION"), std::env::consts::OS, session,
                     if paths.helper().is_ok() { "present" } else { "missing" },
                     if cert.is_file() { "present" } else { "missing" }, trusted, scope, ca_lifetime,

@@ -31,6 +31,8 @@ pub fn render(status: &AppStatus) -> String {
         "helper_missing: install mitmproxy in the setup wizard"
     } else if !status.setup.certificate_exists {
         "ca_missing: create the local CA in the setup wizard"
+    } else if status.setup.certificate_security_issue.is_some() {
+        "ca_store_unsafe: inspect the CA files and restore a matching key/certificate pair"
     } else if status.setup.certificate_trusted == Some(false) {
         "ca_not_trusted: authorize trust, then restart the client"
     } else if let Some(error) = status.capture.error.as_deref() {
@@ -57,7 +59,7 @@ pub fn render(status: &AppStatus) -> String {
         "quota_fresh"
     };
     format!(
-        "Show My Limits {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA file permissions: {}\nCapture: {}\nFresh quota: {}\nStatus: {}",
+        "Show My Limits {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture: {}\nFresh quota: {}\nStatus: {}",
         env!("CARGO_PKG_VERSION"),
         status.setup.platform,
         session,
