@@ -65,11 +65,9 @@ mod tests {
         // Concurrent tests can fork while this FD is open. A fork briefly inherits
         // flock until exec closes CLOEXEC descriptors; allow that bounded handoff.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if let Ok(available) = lock(dir.path(), "capture") { drop(available); break; }
+        while active_state(dir.path(), 101.0).is_some() {
             assert!(std::time::Instant::now() < deadline, "capture lock leaked");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(active_state(dir.path(), 101.0).is_none());
     }
 }

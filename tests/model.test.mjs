@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { remaining, isFresh, countdown, percentage, needsSetup, demoStatus, needsClientRestart } from '../.test-build/model.js';
+import { remaining, isFresh, countdown, percentage, needsSetup, demoStatus, needsClientRestart, uncoveredHosts } from '../.test-build/model.js';
 
 test('remaining quota is not used quota', () => {
   assert.equal(remaining({utilization:.75,reset:2000},1000),.25);
@@ -50,4 +50,15 @@ test('restart reminder waits for a quota response from this capture session', ()
   assert.equal(needsClientRestart(state),false);
   state.profiles=[]; state.capture.phase='stopped';
   assert.equal(needsClientRestart(state),false);
+});
+
+test('leaf-only CA reports servers it does not cover; legacy CA covers any server', () => {
+  const state = demoStatus();
+  state.setup.certificateFormat = 'leaf'; state.setup.certificateHosts = ['gateway.example'];
+  state.settings.hosts = ['Gateway.example'];
+  assert.deepEqual(uncoveredHosts(state), []);
+  state.settings.hosts = ['other.example'];
+  assert.deepEqual(uncoveredHosts(state), ['other.example']);
+  state.setup.certificateFormat = 'legacy'; state.setup.certificateHosts = [];
+  assert.deepEqual(uncoveredHosts(state), []);
 });

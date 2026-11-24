@@ -7,7 +7,8 @@ Tauri 2 tray application with a TypeScript/Vite frontend, Rust backend and a mit
 - `src/main.ts`, `src/styles.css`: UI, setup wizard, settings and browser-only mocks.
 - `src-tauri/src/engine.rs`: settings, owned capture process and state.
 - `src-tauri/src/quota.rs`: quota parsing and freshness.
-- `src-tauri/src/certificate.rs`, `macos_trust.rs`: CA generation and trust.
+- `src-tauri/src/certificate.rs`, `macos_trust.rs`: leaf-only CA generation, store validation and trust.
+- `tools/leaf-ca/`: Python prototype and cross-verifier Name Constraints checks (`ca-constraints.yml`).
 - `src-tauri/src/installer.rs`: pinned official helper downloads and SHA-256 verification.
 - `src-tauri/src/updates.rs`: signed application updates.
 - `tools/mock-claude/`: standalone Go process named `claude` for real HTTPS capture smoke tests without corporate accounts; see `docs/MOCK-CLIENT.md`. Do not install it over the real client or bypass TLS verification.
@@ -81,3 +82,5 @@ Windows helper ownership: spawn all mitmdump helpers through process_tree::Owned
 CLI: `cli/` builds the headless `sml` binary without Tauri, GTK or WebView. It shares settings, pinned installer, CA, addon and quota schemas with the GUI. Capture and setup use OS file locks under the shared proxy directory; retain the capture lock until the owned helper has exited. `active-run` plus a held capture lock and fresh matching heartbeat identify live state; never infer liveness from old quota files. CLI run-time server/process overrides do not rewrite GUI settings. A viewer attached to another capture must not stop it. Certificate trust remains explicit.
 
 0.2.0 macOS smoke: real app auto-start, verified HTTPS mock quotas, CLI attached viewing, viewer exit preserving GUI capture, GUI SIGTERM cleanup and standalone CLI Ctrl+C cleanup passed. Settings/CA migration from the user's old local dev.clim.desktop data was explicitly authorized, copied without deleting originals, and hashes verified; do not turn this into automatic migration for users. CLI macOS trust targets the current-user default keychain (no sudo or admin domain). Linux doctor does not claim trust from certificate-file presence.
+
+Leaf-only CA: new GUI/CLI stores are generated in Rust (rcgen) after the server is chosen. The CA has critical DNS Name Constraints equal to the leaf SANs and excludes all IPs; it signs one ECDSA leaf and its key is dropped, never written. Store = public CA + `leaf-chain.pem`; capture passes `--certs host=chain` and an untrusted `proxy/untrusted-confdir`. `proxy/initialize_ca.py` is gone. Legacy stores (CA key on disk) still run with `confdir` and are flagged in Settings; replace them only through the explicit rotation flow. A leaf store that doesn't cover the configured hosts may be recreated only while untrusted. Clients must be restarted after a trust change (Claude Code reads roots once at start). macOS manual check with Claude Desktop/Claude Code passed with the Python prototype; the Rust path, `macos_trust::is_trusted` on a constrained root, Windows and Linux still need native verification.

@@ -35,7 +35,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 const ID: &str = "io.github.rowro.showmylimits";
-const HELP: &str = "Show My Limits — terminal monitor\n\n  sml setup                  Install mitmproxy and prepare the shared CA\n  sml trust                  Explicitly install/trust the shared CA\n  sml run [--host DOMAIN]     Capture and display quotas (Ctrl+C stops capture)\n  sml watch                  Display an existing GUI/CLI capture (Ctrl+C exits viewer)\n  sml status [--json]         Print current quotas\n  sml doctor                 Show paths, helper and certificate identity\n  sml doctor --share         Show a report without paths, hosts or traffic\n\nrun also accepts repeatable --process NAME.\n--host/--process apply only to this run; saved GUI settings are preserved.\nThe GUI and CLI share data and certificates. No Python or desktop is required.\n";
+const HELP: &str = "Show My Limits — terminal monitor\n\n  sml setup [--host DOMAIN]  Install mitmproxy and prepare a CA limited to the server\n  sml trust                  Explicitly install/trust the shared CA\n  sml run [--host DOMAIN]     Capture and display quotas (Ctrl+C stops capture)\n  sml watch                  Display an existing GUI/CLI capture (Ctrl+C exits viewer)\n  sml status [--json]         Print current quotas\n  sml doctor                 Show paths, helper and certificate identity\n  sml doctor --share         Show a report without paths, hosts or traffic\n\nrun also accepts repeatable --process NAME.\n--host/--process apply only to this run; saved GUI settings are preserved.\nThe GUI and CLI share data and certificates. No Python or desktop is required.\n";
 fn now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -110,19 +110,20 @@ fn trusted(cert: &Path) -> Result<bool, String> {
         Ok(cert.is_file())
     }
 }
-fn setup(paths: &Paths) -> Result<(), String> {
+fn setup(paths: &Paths, override_hosts: Vec<String>) -> Result<(), String> {
     let _guard = coordination::lock(&paths.proxy(), "setup")?;
-    let helper = match paths.helper() {
-        Ok(p) => p,
-        Err(_) => installer::install_to(&paths.data.join("mitmproxy"), |p| {
+    if paths.helper().is_err() {
+        installer::install_to(&paths.data.join("mitmproxy"), |p| {
             eprintln!("mitmproxy: {}", p.phase);
-        })?,
-    };
+        })?;
+    }
     if paths.cert().is_file() {
-        if !certificate::complete_store(&paths.ca()) {
-            return Err("The CA store is incomplete, symlinked, or its private key does not match the certificate. Existing material was preserved; inspect it before restoring from backup.".into());
+        let format = certificate::store_format(&paths.ca()).ok_or(
+            "The CA store is incomplete, symlinked, or its private key does not match the certificate. Existing material was preserved; inspect it before restoring from backup.")?;
+        println!("Reusing certificate: {} ({})", paths.cert().display(), format.as_str());
+        if let Some(covered) = certificate::leaf_hosts(&paths.ca()) {
+            println!("Certificate servers: {}", covered.join(", "));
         }
-        println!("Reusing certificate: {}", paths.cert().display());
         return Ok(());
     }
     if fs::symlink_metadata(paths.ca()).is_ok()
@@ -133,61 +134,13 @@ fn setup(paths: &Paths) -> Result<(), String> {
     {
         return Err("Existing CA material is incomplete; preserved without changes. Repair it before setup.".into());
     }
-    let stage = tempfile::tempdir_in(&paths.data).map_err(|e| e.to_string())?;
-    let addon = stage.path().join("initialize_ca.py");
-    fs::write(&addon, include_str!("../../proxy/initialize_ca.py")).map_err(|e| e.to_string())?;
-    let generated = stage.path().join("generated");
-    let mut cmd = Command::new(helper);
-    cmd.args([
-        "--mode",
-        "regular",
-        "--listen-host",
-        "127.0.0.1",
-        "--listen-port",
-        "0",
-        "--set",
-        "flow_detail=0",
-        "--set",
-        "termlog_verbosity=error",
-        "--set",
-    ])
-    .arg(format!(
-        "confdir={}",
-        stage.path().join("bootstrap").display()
-    ))
-    .arg("-s")
-    .arg(addon)
-    .env("SML_CA_OUTPUT", &generated)
-    .env("PYTHONDONTWRITEBYTECODE", "1")
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
-    let mut child = Managed::spawn(&mut cmd)?;
-    let deadline = now() + 15.0;
-    loop {
-        if let Some(status) = child.child.try_wait().map_err(|e| e.to_string())? {
-            if !status.success() {
-                return Err("CA initialization failed".into());
-            }
-            break;
-        }
-        if now() > deadline {
-            return Err("CA initialization timed out".into());
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    // The CA is limited to the configured servers; its private key is never stored.
+    let hosts = if override_hosts.is_empty() { paths.settings()?.hosts } else { override_hosts };
+    if hosts.is_empty() {
+        return Err("Provide sml setup --host DOMAIN, or configure a server in the app first.".into());
     }
-    if !certificate::details(&generated.join("mitmproxy-ca-cert.cer"))
-        .is_some_and(|c| c.name == "limits-mitmproxy")
-        || !certificate::complete_store(&generated)
-    {
-        return Err("CA initialization produced incomplete material".into());
-    }
-    certificate::secure_new_store(&generated)?;
-    if fs::symlink_metadata(paths.ca()).is_ok() {
-        fs::remove_dir(paths.ca()).map_err(|_| "Existing CA material was preserved")?;
-    }
-    fs::rename(generated, paths.ca()).map_err(|e| e.to_string())?;
-    println!("CA prepared. Run sml trust, then restart the client.");
+    let covered = certificate::create_leaf_store(&hosts, &paths.ca())?;
+    println!("CA prepared for {}. Run sml trust, then restart the client.", covered.join(", "));
     Ok(())
 }
 // Normal exits, errors and Ctrl+C terminate only our own helper tree.
@@ -319,15 +272,25 @@ fn execute() -> Result<(), String> {
         println!("sml {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    if matches!(command, "setup" | "trust") && args.len() != 1 {
-        return Err(format!("Usage: sml {command}"));
+    if command == "trust" && args.len() != 1 {
+        return Err("Usage: sml trust".into());
     }
     if command == "doctor" && args.len() != 1 && args.as_slice() != ["doctor", "--share"] {
         return Err("Usage: sml doctor [--share]".into());
     }
     let paths = Paths::new()?;
     match command {
-        "setup" => setup(&paths),
+        "setup" => {
+            let mut hosts = vec![];
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--host" => hosts.push(settings::normalize_host(rest.next().ok_or("Missing option value")?)?),
+                    _ => return Err("Usage: sml setup [--host DOMAIN]...".into()),
+                }
+            }
+            setup(&paths, hosts)
+        }
         "trust" => {
             #[cfg(target_os = "linux")]
             {
@@ -416,10 +379,15 @@ fn execute() -> Result<(), String> {
                     None => "unknown",
                 };
                 let observation = share_observation(live.as_ref().and_then(|state| state.health.as_ref()).map(|health| health.kind.as_str()));
-                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture live: {}\nFresh quota: {}\nLast observation: {}",
+                let ca_format = match certificate::store_format(&paths.ca()) {
+                    Some(certificate::StoreFormat::Leaf) => "leaf-only (no CA key stored)",
+                    Some(certificate::StoreFormat::Legacy) => "legacy (CA key stored)",
+                    None => "unknown",
+                };
+                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA format: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture live: {}\nFresh quota: {}\nLast observation: {}",
                     env!("CARGO_PKG_VERSION"), std::env::consts::OS, session,
                     if paths.helper().is_ok() { "present" } else { "missing" },
-                    if cert.is_file() { "present" } else { "missing" }, trusted, scope, ca_lifetime,
+                    if cert.is_file() { "present" } else { "missing" }, ca_format, trusted, scope, ca_lifetime,
                     if certificate::security_issue(&paths.ca()).is_some() { "needs review" } else { "no issue detected" },
                     if live.is_some() { "yes" } else { "no" },
                     if fresh { "yes" } else { "no" }, observation);
@@ -437,6 +405,12 @@ fn execute() -> Result<(), String> {
             if let Some(c) = certificate::details(&paths.cert()) {
                 let days = ((c.expires_at as f64 - now()) / 86400.0).ceil() as i64;
                 println!("CA: {}\nSHA-256: {}\nCA expires in: {} days", c.name, c.sha256, days);
+                match certificate::store_format(&paths.ca()) {
+                    Some(certificate::StoreFormat::Leaf) => println!("CA format: leaf-only; servers: {}",
+                        certificate::leaf_hosts(&paths.ca()).unwrap_or_default().join(", ")),
+                    Some(certificate::StoreFormat::Legacy) => println!("CA format: legacy, the CA private key is stored on disk. Replace it from the app (Settings → Capture)."),
+                    None => {}
+                }
                 if let Some(issue) = certificate::security_issue(&paths.ca()) {
                     println!("CA security: {issue}");
                 }
@@ -515,9 +489,7 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
                 for host in &mut config.hosts {
                     *host = settings::normalize_host(host)?;
                 }
-                if !certificate::complete_store(&paths.ca()) {
-                    return Err("The CA store is incomplete, symlinked, or its private key does not match the certificate. Existing material was preserved; inspect it before restoring from backup.".into());
-                }
+                let tls_args = certificate::capture_tls_args(&paths.ca(), &paths.proxy(), &config.hosts)?;
                 if !trusted(&paths.cert())? {
                     return Err(
                         "The CA is not trusted. Run sml trust, then restart your client.".into(),
@@ -556,13 +528,12 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
                     "--allow-hosts",
                     &format!("^(?:{hosts})$"),
                     "--set",
-                    &format!("confdir={}", paths.ca().display()),
-                    "--set",
                     "flow_detail=0",
                     "--set",
                     "termlog_verbosity=error",
-                    "-s",
                 ])
+                .args(&tls_args)
+                .arg("-s")
                 .arg(addon)
                 .env("SML_RUN_ID", &run)
                 .env("SML_STATE_DIR", &state_dir)

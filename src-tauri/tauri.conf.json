@@ -38,7 +38,6 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../proxy/initialize_ca.py": "proxy/initialize_ca.py",
       "../proxy/limits_addon.py": "proxy/limits_addon.py",
       "binaries/": "binaries/",
       "../proxy/linux_askpass.sh": "proxy/linux_askpass.sh",

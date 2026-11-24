@@ -6,8 +6,8 @@ export interface Status {
   settings: Settings;
   profiles: Profile[];
   capture: { phase: "stopped" | "starting" | "listening" | "stopping"; pid: number | null; startedAt: number | null; error: string | null; observation: string | null };
-  setup: { platform: string; helperPath: string | null; certificatePath: string; certificateExists: boolean; certificateTrusted: boolean | null; certificateTrustError: string | null; certificateSecurityIssue: string | null; certificateTrustScope: string | null; certificateName: string | null; certificateSha256: string | null; certificateExpiresAt: number | null; installSupported: boolean; launchAtLogin: boolean | null; installation: { phase: string; downloaded: number; total: number | null; error: string | null } };
-  rotation: { phase: string; pendingSha256: string | null; pendingCertificatePath: string | null; pendingTrusted: boolean | null; pendingIssue: string | null; previousSha256: string | null; previousCertificatePath: string | null; previousTrustScope: string | null; trialReady: boolean };
+  setup: { platform: string; helperPath: string | null; certificatePath: string; certificateExists: boolean; certificateTrusted: boolean | null; certificateTrustError: string | null; certificateSecurityIssue: string | null; certificateTrustScope: string | null; certificateName: string | null; certificateSha256: string | null; certificateExpiresAt: number | null; certificateFormat: "leaf" | "legacy" | null; certificateHosts: string[]; installSupported: boolean; launchAtLogin: boolean | null; installation: { phase: string; downloaded: number; total: number | null; error: string | null } };
+  rotation: { phase: string; pendingSha256: string | null; pendingCertificatePath: string | null; pendingTrusted: boolean | null; pendingIssue: string | null; pendingHosts: string[]; previousSha256: string | null; previousCertificatePath: string | null; previousTrustScope: string | null; trialReady: boolean };
   connectionIssue: string | null;
   now: number;
 }
@@ -19,6 +19,12 @@ export function certificateTrusted(state: Status): boolean {
 export function needsSetup(state: Status): boolean {
   return !state.setup.helperPath || !state.setup.certificateExists || !state.settings.hosts.length ||
     !certificateTrusted(state);
+}
+
+/** Servers selected in settings that the active leaf-only CA does not cover. */
+export function uncoveredHosts(state: Status): string[] {
+  if (state.setup.certificateFormat !== "leaf") return [];
+  return state.settings.hosts.filter(host => !state.setup.certificateHosts.includes(host.trim().toLowerCase()));
 }
 
 export function needsClientRestart(state: Status): boolean {
@@ -63,7 +69,7 @@ export function demoStatus(): Status {
     profiles: [{ id: "demo", host: "gateway.example", observedAt: now - 18, status: "allowed", windows: {
       "5h": { utilization: 0.27, reset: now + 8100 }, "7d": { utilization: 0.58, reset: now + 259200 }
     }}], capture: { phase: "listening", pid: null, startedAt: now - 100, error: null, observation: "quota_received" },
-    setup: { platform: "macos", helperPath: "/example/mitmdump", certificatePath: "/example/show-my-limits-ca.cer", certificateExists: true, certificateTrusted: true, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: "limits-mitmproxy", certificateSha256: null, certificateExpiresAt: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } },
-    rotation: { phase: "none", pendingSha256: null, pendingCertificatePath: null, pendingTrusted: null, pendingIssue: null, previousSha256: null, previousCertificatePath: null, previousTrustScope: null, trialReady: false },
+    setup: { platform: "macos", helperPath: "/example/mitmdump", certificatePath: "/example/show-my-limits-ca.cer", certificateExists: true, certificateTrusted: true, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: "Show My Limits CA", certificateSha256: null, certificateExpiresAt: null, certificateFormat: "leaf", certificateHosts: ["gateway.example"], installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } },
+    rotation: { phase: "none", pendingSha256: null, pendingCertificatePath: null, pendingTrusted: null, pendingIssue: null, pendingHosts: [], previousSha256: null, previousCertificatePath: null, previousTrustScope: null, trialReady: false },
     connectionIssue: null, now };
 }

@@ -110,6 +110,9 @@ pub struct SetupStatus {
     pub certificate_name: Option<String>,
     pub certificate_sha256: Option<String>,
     pub certificate_expires_at: Option<i64>,
+    /// "leaf": CA key never stored, limited to `certificate_hosts`; "legacy": mitmproxy CA with its key.
+    pub certificate_format: Option<String>,
+    pub certificate_hosts: Vec<String>,
     pub installation: Installation,
     pub install_supported: bool,
     pub launch_at_login: Option<bool>,
@@ -134,6 +137,7 @@ pub struct RotationStatus {
     pub pending_certificate_path: Option<String>,
     pub pending_trusted: Option<bool>,
     pub pending_issue: Option<String>,
+    pub pending_hosts: Vec<String>,
     pub previous_sha256: Option<String>,
     pub previous_certificate_path: Option<String>,
     pub previous_trust_scope: Option<String>,
@@ -317,6 +321,7 @@ impl Shared {
             pending_certificate_path: pending_complete.then(|| pending.join("mitmproxy-ca-cert.cer").display().to_string()),
             pending_trusted: pending_complete.then(|| checked_ca_trust(&pending.join("mitmproxy-ca-cert.cer"))).flatten(),
             pending_issue: crate::certificate::security_issue(&pending).map(str::to_owned),
+            pending_hosts: crate::certificate::leaf_hosts(&pending).unwrap_or_default(),
             previous_sha256: previous_complete.then(|| crate::certificate::details(&retired.join("mitmproxy-ca-cert.cer"))).flatten().map(|d| d.sha256),
             previous_certificate_path: previous_complete.then(|| retired.join("mitmproxy-ca-cert.cer").display().to_string()),
             previous_trust_scope: previous_complete.then(|| checked_ca_scope(&retired.join("mitmproxy-ca-cert.cer"))).flatten(),
@@ -401,6 +406,8 @@ impl Shared {
                 certificate_name: identity.as_ref().map(|d| d.name.clone()),
                 certificate_expires_at: identity.as_ref().map(|d| d.expires_at),
                 certificate_sha256: identity.map(|d| d.sha256),
+                certificate_format: crate::certificate::store_format(&self.paths.certificates).map(|f| f.as_str().to_owned()),
+                certificate_hosts: crate::certificate::leaf_hosts(&self.paths.certificates).unwrap_or_default(),
                 installation: self
                     .installation
                     .lock()
@@ -613,9 +620,8 @@ impl Shared {
         {
             return Err("Сначала создайте сертификат в мастере первоначальной настройки.".into());
         }
-        if !crate::certificate::complete_store(&ca_dir) {
-            return Err("Хранилище CA неполное, содержит ссылку или файлы сертификата не совпадают. Существующие файлы сохранены; проверьте их перед восстановлением из резервной копии.".into());
-        }
+        // Legacy stores run as mitmproxy confdir; leaf-only stores pass the leaf via --certs.
+        let tls_args = crate::certificate::capture_tls_args(&ca_dir, &self.paths.proxy, &inner.settings.hosts)?;
         let helper = self
             .find_helper(app, &inner.settings)
             .ok_or("Не найден mitmdump. Проверьте установку перехватчика.")?;
@@ -686,13 +692,12 @@ impl Shared {
                 "--allow-hosts",
                 &format!("^(?:{hosts})$"),
                 "--set",
-                &format!("confdir={}", ca_dir.display()),
-                "--set",
                 "flow_detail=0",
                 "--set",
                 "termlog_verbosity=error",
-                "-s",
             ])
+            .args(&tls_args)
+            .arg("-s")
             .arg(addon)
             .env("SML_STATE_DIR", &state_dir)
             .env(
@@ -893,92 +898,36 @@ impl Shared {
     }
 
     fn prepare_certificate_at(&self, app: &AppHandle, destination: &Path) -> Result<(), String> {
-        if destination.join("mitmproxy-ca-cert.cer").is_file() {
-            return if crate::certificate::complete_store(destination) { Ok(()) } else {
-                Err("Хранилище CA неполное, содержит ссылку или закрытый ключ не соответствует сертификату. Существующие файлы сохранены без изменений.".into())
-            };
-        }
+        let _ = app;
         let settings = self
             .inner
             .lock()
             .map_err(|_| "Настройки заняты.")?
             .settings
             .clone();
-        let helper = self
-            .find_helper(app, &settings)
-            .ok_or("Не найден mitmdump. Укажите путь к нему в настройках.")?;
-        let parent = destination
-            .parent()
-            .ok_or("Не найден каталог сертификатов.")?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let staging = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
-        let generated = staging.path().join("generated");
-        let addon = app
-            .path()
-            .resolve(
-                "proxy/initialize_ca.py",
-                tauri::path::BaseDirectory::Resource,
-            )
-            .map_err(|e| e.to_string())?;
-        if !addon.is_file() {
-            return Err("В сборке отсутствует генератор сертификата.".into());
-        }
-        let mut ca_command = helper_command(&helper);
-        ca_command
-            .args([
-                "--mode",
-                "regular",
-                "--listen-host",
-                "127.0.0.1",
-                "--listen-port",
-                "0",
-                "--set",
-                "flow_detail=0",
-                "--set",
-                "termlog_verbosity=error",
-                "--set",
-            ])
-            .arg(format!(
-                "confdir={}",
-                staging.path().join("bootstrap").display()
-            ))
-            .arg("-s")
-            .arg(addon)
-            .env("SML_CA_OUTPUT", &generated)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut child = OwnedChild::spawn(&mut ca_command).map_err(|e| e.to_string())?;
-        let mut completed = false;
-        for _ in 0..100 {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                completed = status.success();
-                break;
+        if destination.join(crate::certificate::PUBLIC_CA).is_file() {
+            let Some(format) = crate::certificate::store_format(destination) else {
+                return Err("Хранилище CA неполное, содержит ссылку или закрытый ключ не соответствует сертификату. Существующие файлы сохранены без изменений.".into());
+            };
+            let covered = crate::certificate::leaf_hosts(destination).unwrap_or_default();
+            if format == crate::certificate::StoreFormat::Legacy
+                || settings.hosts.iter().all(|host| covered.contains(host)) {
+                return Ok(());
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        if !completed {
-            signal_stop(&mut child);
-            for _ in 0..30 {
-                if child.try_wait().ok().flatten().is_some() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            // A leaf-only store holds no CA key. Before anyone trusts it, a server
+            // change may recreate it; once trusted, only the explicit replacement does.
+            let certificate = destination.join(crate::certificate::PUBLIC_CA);
+            let is_active = destination == self.paths.certificates.as_path();
+            if (is_active && settings.certificate_trust_confirmed)
+                || checked_ca_trust(&certificate) != Some(false)
+                || checked_ca_scope(&certificate).as_deref() != Some("none") {
+                return Err(format!(
+                    "Сертификат выпущен для {} и уже доверен. Для другого сервера создайте замену CA в настройках «Захват».",
+                    covered.join(", ")));
             }
-            let _ = child.kill();
+            fs::remove_dir_all(destination).map_err(|e| format!("Не удалось удалить недоверенный сертификат: {e}"))?;
         }
-        let _ = child.wait();
-        let ready = completed
-            && crate::certificate::details(&generated.join("mitmproxy-ca-cert.cer"))
-                .is_some_and(|certificate| certificate.name == "limits-mitmproxy")
-            && crate::certificate::complete_store(&generated);
-        if ready {
-            crate::certificate::secure_new_store(&generated)?;
-            publish_new_ca(&generated, destination)
-        } else {
-            Err("Не удалось подготовить сертификат. Проверьте установленный mitmdump.".into())
-        }
+        crate::certificate::create_leaf_store(&settings.hosts, destination).map(|_| ())
     }
 }
 
@@ -1029,16 +978,6 @@ fn helper_version_matches(output: &[u8]) -> bool {
     String::from_utf8_lossy(output).lines()
         .find_map(|line| line.strip_prefix("Mitmproxy: "))
         .and_then(|line| line.split_whitespace().next()) == Some(installer::VERSION)
-}
-
-fn publish_new_ca(generated: &Path, destination: &Path) -> Result<(), String> {
-    if fs::symlink_metadata(destination).is_ok() {
-        // Remove only an empty directory. Any existing file blocks replacement.
-        fs::remove_dir(destination).map_err(|_| {
-            "В каталоге уже есть сертификат или ключ. Они сохранены без изменений.".to_string()
-        })?;
-    }
-    fs::rename(generated, destination).map_err(|e| format!("Не удалось сохранить сертификат: {e}"))
 }
 
 fn read_capture_state(
@@ -1335,34 +1274,24 @@ mod tests {
         assert!(!shared.save_settings(next).unwrap());
     }
     #[test]
-    fn ca_publication_preserves_existing_material() {
+    fn ca_creation_preserves_existing_material() {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("certificates");
-        let generated = root.path().join("generated");
         fs::create_dir(&destination).unwrap();
-        fs::create_dir(&generated).unwrap();
         fs::write(destination.join("mitmproxy-ca.pem"), b"existing key").unwrap();
-        fs::write(generated.join("mitmproxy-ca.pem"), b"new key").unwrap();
-        assert!(publish_new_ca(&generated, &destination).is_err());
-        assert_eq!(
-            fs::read(destination.join("mitmproxy-ca.pem")).unwrap(),
-            b"existing key"
-        );
+        let hosts = vec!["ai.example.com".to_string()];
+        assert!(crate::certificate::create_leaf_store(&hosts, &destination).is_err());
+        assert_eq!(fs::read(destination.join("mitmproxy-ca.pem")).unwrap(), b"existing key");
         let empty = root.path().join("empty");
         fs::create_dir(&empty).unwrap();
-        publish_new_ca(&generated, &empty).unwrap();
-        assert_eq!(
-            fs::read(empty.join("mitmproxy-ca.pem")).unwrap(),
-            b"new key"
-        );
+        crate::certificate::create_leaf_store(&hosts, &empty).unwrap();
+        assert_eq!(crate::certificate::leaf_hosts(&empty), Some(hosts.clone()));
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
             let dangling = root.path().join("dangling");
             symlink(root.path().join("missing"), &dangling).unwrap();
-            let another = root.path().join("another-generated");
-            fs::create_dir(&another).unwrap();
-            assert!(publish_new_ca(&another, &dangling).is_err());
+            assert!(crate::certificate::create_leaf_store(&hosts, &dangling).is_err());
             assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
         }
     }

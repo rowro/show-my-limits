@@ -92,8 +92,277 @@ pub fn debian_source_trust(cert_path: &Path) -> Option<bool> {
     ])
 }
 
+/// Leaf-only store: the trusted CA key is never written. The CA is limited by
+/// Name Constraints to the configured servers and signs one leaf for them;
+/// mitmproxy receives only that leaf through `--certs`.
+pub const LEAF_CHAIN: &str = "leaf-chain.pem";
+pub const PUBLIC_CA: &str = "mitmproxy-ca-cert.cer";
+const LEGACY_KEY: &str = "mitmproxy-ca.pem";
+// Apple rejects user-trusted TLS leaves valid for more than 825 days; keep the
+// leaf within the public 398-day limit and inside the CA validity.
+const CA_DAYS: i64 = 400;
+const LEAF_DAYS: i64 = 397;
+const MAX_FILE: u64 = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreFormat {
+    /// mitmproxy confdir with the CA private key (installations before the leaf-only CA).
+    Legacy,
+    /// Public CA plus a leaf chain for the configured servers.
+    Leaf,
+}
+
+impl StoreFormat {
+    pub fn as_str(self) -> &'static str {
+        match self { StoreFormat::Legacy => "legacy", StoreFormat::Leaf => "leaf" }
+    }
+}
+
+pub fn store_format(directory: &Path) -> Option<StoreFormat> {
+    if complete_legacy_store(directory) { Some(StoreFormat::Legacy) }
+    else if leaf_hosts(directory).is_some() { Some(StoreFormat::Leaf) }
+    else { None }
+}
+
 /// Refuse to let a helper regenerate a partially deleted existing CA.
 pub fn complete_store(directory: &Path) -> bool {
+    store_format(directory).is_some()
+}
+
+fn regular_file(path: &Path) -> Option<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > MAX_FILE {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
+fn pem_blocks(mut bytes: &[u8]) -> Option<Vec<x509_parser::pem::Pem>> {
+    let mut blocks = Vec::new();
+    while !bytes.iter().all(u8::is_ascii_whitespace) {
+        let (rest, pem) = parse_x509_pem(bytes).ok()?;
+        if rest.len() == bytes.len() { return None; }
+        blocks.push(pem);
+        bytes = rest;
+    }
+    Some(blocks)
+}
+
+fn dns_names(cert: &X509Certificate) -> Option<Vec<String>> {
+    let san = cert.subject_alternative_name().ok()??;
+    let mut names = Vec::new();
+    for name in &san.value.general_names {
+        match name {
+            GeneralName::DNSName(dns) => names.push(dns.to_ascii_lowercase()),
+            _ => return None,
+        }
+    }
+    names.sort();
+    names.dedup();
+    (!names.is_empty()).then_some(names)
+}
+
+/// Servers covered by a valid leaf-only store, or None if the store is not one.
+/// Checks: no CA key on disk, leaf key matches the leaf, the leaf is signed by
+/// the public CA, and the CA is constrained to exactly the leaf's names.
+pub fn leaf_hosts(directory: &Path) -> Option<Vec<String>> {
+    if !fs::symlink_metadata(directory).is_ok_and(|m| m.file_type().is_dir())
+        || fs::symlink_metadata(directory.join(LEGACY_KEY)).is_ok() {
+        return None;
+    }
+    let public = regular_file(&directory.join(PUBLIC_CA))?;
+    let chain = regular_file(&directory.join(LEAF_CHAIN))?;
+    let (_, ca_pem) = parse_x509_pem(&public).ok()?;
+    let blocks = pem_blocks(&chain)?;
+    let [key, leaf_pem, chain_ca] = blocks.as_slice() else { return None; };
+    if ca_pem.label != "CERTIFICATE" || key.label != "PRIVATE KEY" || leaf_pem.label != "CERTIFICATE"
+        || chain_ca.label != "CERTIFICATE" || chain_ca.contents != ca_pem.contents {
+        return None;
+    }
+    let (_, ca) = X509Certificate::from_der(&ca_pem.contents).ok()?;
+    let (_, leaf) = X509Certificate::from_der(&leaf_pem.contents).ok()?;
+    if !ca.is_ca() || leaf.is_ca()
+        || ca.verify_signature(None).is_err()
+        || leaf.verify_signature(Some(ca.public_key())).is_err() {
+        return None;
+    }
+    let hosts = dns_names(&leaf)?;
+    let constraints = ca.name_constraints().ok()??;
+    if !constraints.critical { return None; }
+    let mut permitted = Vec::new();
+    for subtree in constraints.value.permitted_subtrees.as_ref()? {
+        match &subtree.base {
+            GeneralName::DNSName(dns) => permitted.push(dns.to_ascii_lowercase()),
+            _ => return None,
+        }
+    }
+    permitted.sort();
+    permitted.dedup();
+    if permitted != hosts { return None; }
+    let rng = ring::rand::SystemRandom::new();
+    let pair = ring::signature::EcdsaKeyPair::from_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING, &key.contents, &rng).ok()?;
+    use ring::signature::KeyPair as _;
+    (pair.public_key().as_ref() == leaf.public_key().subject_public_key.data.as_ref()).then_some(hosts)
+}
+
+fn validate_hosts(hosts: &[String]) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = hosts.iter().map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase()).collect();
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        return Err("Сначала укажите сервер: сертификат выпускается только для него.".into());
+    }
+    for name in &names {
+        if name.parse::<std::net::IpAddr>().is_ok() {
+            return Err(format!("{name} — IP-адрес. Сертификат выпускается только для доменного имени сервера."));
+        }
+        let valid = name.len() <= 253 && name.contains('.') && name.split('.').all(|label|
+            !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        if !valid {
+            return Err(format!("{name} не подходит для сертификата: нужен полный домен сервера."));
+        }
+    }
+    Ok(names)
+}
+
+/// Build CA and leaf in memory. The CA signing key is dropped on return and is
+/// never serialized. Returns (public CA PEM, leaf chain PEM).
+fn issue_leaf_store(hosts: &[String]) -> Result<(String, String), String> {
+    use rcgen::{BasicConstraints, CertificateParams, CidrSubnet, DistinguishedName, DnType,
+        ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+        NameConstraints, SerialNumber, PKCS_ECDSA_P256_SHA256};
+    let error = |e: rcgen::Error| format!("Не удалось создать сертификат: {e}");
+    let now = ::time::OffsetDateTime::now_utc();
+    let serial = || -> Result<SerialNumber, String> {
+        let mut bytes = [0u8; 16];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
+            .map_err(|_| "Не удалось получить случайные данные.".to_string())?;
+        bytes[0] &= 0x7f;
+        Ok(SerialNumber::from_slice(&bytes))
+    };
+    let name = |common: String| {
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::OrganizationName, "Show My Limits");
+        dn.push(DnType::CommonName, common);
+        dn
+    };
+
+    let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(error)?;
+    let mut ca = CertificateParams::default();
+    ca.distinguished_name = name(format!("Show My Limits CA {}", now.date()));
+    ca.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    // Match the legacy CA so OS trust evaluation of the root behaves the same.
+    ca.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    ca.name_constraints = Some(NameConstraints {
+        permitted_subtrees: hosts.iter().cloned().map(GeneralSubtree::DnsName).collect(),
+        excluded_subtrees: vec![
+            GeneralSubtree::IpAddress(CidrSubnet::V4([0; 4], [0; 4])),
+            GeneralSubtree::IpAddress(CidrSubnet::V6([0; 16], [0; 16])),
+        ],
+    });
+    ca.not_before = now - ::time::Duration::minutes(5);
+    ca.not_after = now + ::time::Duration::days(CA_DAYS);
+    ca.serial_number = Some(serial()?);
+    let ca_cert = ca.self_signed(&ca_key).map_err(error)?;
+    let issuer = Issuer::new(ca, ca_key);
+
+    let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(error)?;
+    let mut leaf = CertificateParams::new(hosts.to_vec()).map_err(error)?;
+    leaf.distinguished_name = name(hosts[0].clone());
+    leaf.is_ca = IsCa::ExplicitNoCa;
+    leaf.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    leaf.use_authority_key_identifier_extension = true;
+    leaf.not_before = now - ::time::Duration::minutes(5);
+    leaf.not_after = now + ::time::Duration::days(LEAF_DAYS);
+    leaf.serial_number = Some(serial()?);
+    let leaf_cert = leaf.signed_by(&leaf_key, &issuer).map_err(error)?;
+    drop(issuer); // the only copy of the CA private key
+
+    let ca_pem = ca_cert.pem();
+    Ok((ca_pem.clone(), format!("{}{}{}", leaf_key.serialize_pem(), leaf_cert.pem(), ca_pem)))
+}
+
+/// Create a leaf-only store at `destination`. An existing non-empty directory
+/// is never replaced.
+pub fn create_leaf_store(hosts: &[String], destination: &Path) -> Result<Vec<String>, String> {
+    let hosts = validate_hosts(hosts)?;
+    let parent = destination.parent().ok_or("Не найден каталог сертификатов.")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let staging = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
+    let generated = staging.path().join("generated");
+    fs::create_dir(&generated).map_err(|e| e.to_string())?;
+    secure_new_store(&generated)?;
+    let (ca_pem, chain_pem) = issue_leaf_store(&hosts)?;
+    write_private(&generated.join(PUBLIC_CA), ca_pem.as_bytes())?;
+    write_private(&generated.join(LEAF_CHAIN), chain_pem.as_bytes())?;
+    secure_new_store(&generated)?;
+    if leaf_hosts(&generated).as_ref() != Some(&hosts) {
+        return Err("Созданный сертификат не прошёл проверку; ничего не сохранено.".into());
+    }
+    if fs::symlink_metadata(destination).is_ok() {
+        // Remove only an empty directory. Any existing file blocks replacement.
+        fs::remove_dir(destination).map_err(|_|
+            "В каталоге уже есть сертификат или ключ. Они сохранены без изменений.".to_string())?;
+    }
+    fs::rename(&generated, destination).map_err(|e| format!("Не удалось сохранить сертификат: {e}"))?;
+    Ok(hosts)
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write;
+    options.open(path).and_then(|mut file| file.write_all(bytes))
+        .map_err(|e| format!("Не удалось записать сертификат: {e}"))
+}
+
+/// Directory for mitmproxy's own CA when a leaf-only store is active. That CA
+/// is never trusted; with `--allow-hosts` it only signs nothing a client accepts.
+pub fn untrusted_confdir(proxy: &Path) -> std::path::PathBuf {
+    proxy.join("untrusted-confdir")
+}
+
+/// mitmproxy TLS arguments for the store at `ca_dir` and the servers to capture.
+pub fn capture_tls_args(ca_dir: &Path, proxy: &Path, hosts: &[String]) -> Result<Vec<String>, String> {
+    match store_format(ca_dir) {
+        Some(StoreFormat::Legacy) => Ok(vec!["--set".into(), format!("confdir={}", ca_dir.display())]),
+        Some(StoreFormat::Leaf) => {
+            let covered = leaf_hosts(ca_dir).unwrap_or_default();
+            let missing: Vec<_> = hosts.iter().filter(|h| !covered.contains(h)).cloned().collect();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "Сертификат выпущен для {}, а выбран {}. Создайте новый сертификат для этого сервера в настройках «Захват».",
+                    covered.join(", "), missing.join(", ")));
+            }
+            let confdir = untrusted_confdir(proxy);
+            fs::create_dir_all(&confdir).map_err(|e| format!("Не удалось подготовить каталог перехватчика: {e}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&confdir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+            }
+            let chain = ca_dir.join(LEAF_CHAIN);
+            let mut args = vec!["--set".into(), format!("confdir={}", confdir.display())];
+            for host in hosts {
+                args.push("--certs".into());
+                args.push(format!("{host}={}", chain.display()));
+            }
+            Ok(args)
+        }
+        None => Err("Хранилище CA неполное, содержит ссылку или файлы сертификата не совпадают. Существующие файлы сохранены; проверьте их перед восстановлением из резервной копии.".into()),
+    }
+}
+
+fn complete_legacy_store(directory: &Path) -> bool {
     if !fs::symlink_metadata(directory).is_ok_and(|m| m.file_type().is_dir()) {
         return false;
     }
@@ -194,7 +463,7 @@ pub fn secure_new_store(directory: &Path) -> Result<(), String> {
 
 /// Report insecure permissions without changing an existing CA or its key.
 pub fn security_issue(directory: &Path) -> Option<&'static str> {
-    let has_material = ["mitmproxy-ca-cert.cer", "mitmproxy-ca.pem", "mitmproxy-dhparam.pem"]
+    let has_material = ["mitmproxy-ca-cert.cer", "mitmproxy-ca.pem", "mitmproxy-dhparam.pem", LEAF_CHAIN]
         .iter().any(|name| fs::symlink_metadata(directory.join(name)).is_ok());
     if has_material && !complete_store(directory) {
         return Some("Хранилище CA неполное, содержит ссылку или закрытый ключ не соответствует сертификату. Существующие файлы не изменены.");
@@ -255,6 +524,89 @@ pub fn install(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn hosts(names: &[&str]) -> Vec<String> { names.iter().map(|s| s.to_string()).collect() }
+
+    #[test]
+    fn leaf_store_keeps_no_ca_key_and_covers_only_configured_servers() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("certificates");
+        let created = create_leaf_store(&hosts(&["AI.Example.com", "api.example.org"]), &store).unwrap();
+        assert_eq!(created, hosts(&["ai.example.com", "api.example.org"]));
+        assert_eq!(store_format(&store), Some(StoreFormat::Leaf));
+        assert!(complete_store(&store));
+        assert_eq!(leaf_hosts(&store), Some(created.clone()));
+        assert!(!store.join(LEGACY_KEY).exists());
+        let public = fs::read_to_string(store.join(PUBLIC_CA)).unwrap();
+        assert!(!public.contains("PRIVATE KEY"));
+        let chain = fs::read_to_string(store.join(LEAF_CHAIN)).unwrap();
+        assert_eq!(chain.matches("PRIVATE KEY-----").count(), 2, "exactly one key: the leaf's");
+        assert!(details(&store.join(PUBLIC_CA)).unwrap().name.starts_with("Show My Limits CA "));
+        assert_eq!(security_issue(&store), None);
+
+        let proxy = root.path().join("proxy");
+        let args = capture_tls_args(&store, &proxy, &hosts(&["ai.example.com"])).unwrap();
+        assert!(args.contains(&"--certs".to_string()));
+        assert!(args.iter().any(|a| a.starts_with("ai.example.com=") && a.ends_with(LEAF_CHAIN)));
+        assert!(args.iter().any(|a| a == &format!("confdir={}", untrusted_confdir(&proxy).display())));
+        let error = capture_tls_args(&store, &proxy, &hosts(&["other.example.net"])).unwrap_err();
+        assert!(error.contains("other.example.net"));
+
+        // An existing store is never overwritten.
+        assert!(create_leaf_store(&hosts(&["ai.example.com"]), &store).is_err());
+        assert_eq!(leaf_hosts(&store), Some(created));
+    }
+
+    #[test]
+    fn leaf_store_rejects_tampering() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        create_leaf_store(&hosts(&["ai.example.com"]), &first).unwrap();
+        create_leaf_store(&hosts(&["ai.example.com"]), &second).unwrap();
+        // CA from another store: the leaf is no longer signed by the trusted CA.
+        fs::copy(second.join(PUBLIC_CA), first.join(PUBLIC_CA)).unwrap();
+        assert_eq!(store_format(&first), None);
+        assert!(security_issue(&first).is_some());
+        // A CA key beside the leaf turns it into an inconsistent legacy store.
+        fs::write(second.join(LEGACY_KEY), b"key").unwrap();
+        assert_eq!(store_format(&second), None);
+    }
+
+    #[test]
+    fn leaf_store_refuses_ip_addresses_and_bare_names() {
+        let root = tempfile::tempdir().unwrap();
+        for bad in ["10.0.0.1", "::1", "localhost", "-bad.example.com", ""] {
+            assert!(create_leaf_store(&hosts(&[bad]), &root.path().join("store")).is_err(), "{bad}");
+        }
+        assert!(create_leaf_store(&[], &root.path().join("store")).is_err());
+        assert!(!root.path().join("store").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn leaf_store_name_constraints_are_enforced_by_openssl() {
+        use std::process::Command;
+        if Command::new("openssl").arg("version").output().is_err() { return; }
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        create_leaf_store(&hosts(&["ai.example.com"]), &store).unwrap();
+        let chain = fs::read_to_string(store.join(LEAF_CHAIN)).unwrap();
+        let start = chain.find("-----BEGIN CERTIFICATE-----").unwrap();
+        let end = chain.find("-----END CERTIFICATE-----").unwrap() + "-----END CERTIFICATE-----\n".len();
+        fs::write(root.path().join("leaf.pem"), &chain[start..end]).unwrap();
+        let verify = |host: &str| Command::new("openssl")
+            .args(["verify", "-CAfile"]).arg(store.join(PUBLIC_CA))
+            .args(["-verify_hostname", host]).arg(root.path().join("leaf.pem"))
+            .output().unwrap().status.success();
+        assert!(verify("ai.example.com"));
+        assert!(!verify("evil.example.com"));
+        let text = Command::new("openssl").args(["x509", "-noout", "-text", "-in"]).arg(store.join(PUBLIC_CA))
+            .output().unwrap();
+        let text = String::from_utf8_lossy(&text.stdout);
+        assert!(text.contains("X509v3 Name Constraints: critical"));
+        assert!(text.contains("DNS:ai.example.com"));
+    }
+
     #[test]
     fn invalid_certificate_has_no_identity() {
         assert!(parse(b"not a certificate").is_none());
