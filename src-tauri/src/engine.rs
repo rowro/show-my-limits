@@ -93,6 +93,10 @@ pub struct Inner {
     pub run_id: Option<String>,
     pub last_state: Option<ProxyState>,
     pub rotation_trial: bool,
+    /// Last macOS network-extension check while starting: (checked_at, waiting for user).
+    pub extension_check: Option<(f64, bool)>,
+    /// When the capture last waited for an OS approval; the start deadline counts from it.
+    pub approval_seen_at: Option<f64>,
 }
 pub struct Shared {
     pub paths: Paths,
@@ -109,6 +113,8 @@ pub struct CaptureStatus {
     pub started_at: Option<f64>,
     pub error: Option<String>,
     pub observation: Option<String>,
+    /// An OS approval the helper waits for, e.g. "macos_extension".
+    pub approval: Option<String>,
 }
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -207,6 +213,8 @@ impl Shared {
                 run_id: None,
                 last_state: None,
                 rotation_trial: false,
+                extension_check: None,
+                approval_seen_at: None,
             }),
         })
     }
@@ -306,17 +314,40 @@ impl Shared {
             inner.started_at,
             timestamp,
         );
-        if pid.is_some()
-            && !active
-            && inner.stop_at.is_none()
+        let starting = pid.is_some() && !active && inner.stop_at.is_none();
+        // mitmproxy's macOS redirector waits without a timeout until the user allows
+        // its network extension; it prints nothing. Read the extension list instead.
+        #[cfg(target_os = "macos")]
+        let awaiting_extension = starting && timestamp - inner.started_at > 2.0 && {
+            if inner.extension_check.is_none_or(|(at, _)| timestamp - at > 3.0) {
+                let waiting = crate::macos_extension::state() == Some(crate::macos_extension::ExtensionState::WaitingForUser);
+                inner.extension_check = Some((timestamp, waiting));
+            }
+            inner.extension_check.is_some_and(|(_, waiting)| waiting)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let awaiting_extension = false;
+        if !starting {
+            inner.extension_check = None;
+            inner.approval_seen_at = None;
+        } else if awaiting_extension {
+            inner.approval_seen_at = Some(timestamp);
+        }
+        // The deadline does not run out while the OS waits for the user's approval.
+        if starting
             && timestamp - inner.started_at > 90.0
+            && inner.approval_seen_at.is_none_or(|seen| timestamp - seen > 60.0)
         {
             if let Some(child) = inner.child.as_mut() {
                 signal_stop(child);
             }
             inner.stop_at = Some(timestamp);
             let issue = inner.capture_issue.lock().unwrap_or_else(|p| p.into_inner()).clone();
-            inner.error = Some(issue.unwrap_or_else(|| "Перехватчик не подтвердил готовность за 90 секунд. Запуск отменён. Проверьте запрос прав и повторите попытку.".into()));
+            inner.error = Some(issue.unwrap_or_else(|| if cfg!(target_os = "macos") {
+                "Перехватчик не подтвердил готовность за 90 секунд, запуск отменён. Проверьте, не ждёт ли macOS разрешения: сетевое расширение Mitmproxy Redirector (Системные настройки → Основные → Объекты входа и расширения) или запрос на добавление конфигурации прокси. Затем повторите запуск.".into()
+            } else {
+                "Перехватчик не подтвердил готовность за 90 секунд. Запуск отменён. Проверьте запрос прав и повторите попытку.".into()
+            }));
         }
         let profiles: Vec<_> = state
             .profiles
@@ -406,6 +437,7 @@ impl Shared {
                 observation: state.health.as_ref()
                     .filter(|health| active && timestamp - health.observed_at < 120.0)
                     .map(|health| health.kind.clone()),
+                approval: awaiting_extension.then(|| "macos_extension".into()),
             },
             setup: SetupStatus {
                 platform: std::env::consts::OS.into(),
@@ -1285,6 +1317,8 @@ mod tests {
                 run_id: None,
                 last_state: None,
                 rotation_trial: false,
+                extension_check: None,
+                approval_seen_at: None,
             }),
             installation: Mutex::new(Installation::default()),
             certificate_installation: Mutex::new(()),

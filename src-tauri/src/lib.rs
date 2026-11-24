@@ -12,6 +12,8 @@ mod installer;
 mod linux_panel;
 #[cfg(target_os = "macos")]
 mod macos_trust;
+#[cfg(target_os = "macos")]
+mod macos_extension;
 mod process_tree;
 mod quota;
 mod settings;
@@ -227,6 +229,14 @@ async fn install_replacement_certificate(app: tauri::AppHandle) -> Result<(), St
     tauri::async_runtime::spawn_blocking(move || receiver.recv())
         .await.map_err(|e| e.to_string())?
         .map_err(|_| "Не удалось получить результат установки нового CA.".to_string())?
+}
+
+#[tauri::command]
+fn open_extension_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    { macos_extension::open_settings() }
+    #[cfg(not(target_os = "macos"))]
+    { Err("Доступно только в macOS.".into()) }
 }
 
 #[tauri::command]
@@ -501,6 +511,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            open_extension_settings,
             install_helper,
             gnome_status,
             logout_gnome_session,

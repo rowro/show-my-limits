@@ -234,6 +234,7 @@ function overview() {
   if (state.rotation.phase === "interrupted") return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Замена CA прервана</h2><p>Прежний CA сохранён, но действующий каталог не завершён. Восстановите прежний CA перед новым захватом.</p><button class="primary" data-action="restore-interrupted-replacement">Восстановить прежний CA</button></div>`;
   const item = profile();
   if (needsSetup(state)) return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Сначала подключим Claude</h2><p>Подготовь перехватчик, выбери сервер<br>и доверь сертификат. Затем появятся лимиты.</p><button class="primary" data-view="setup">Перейти к подключению${icon("arrow")}</button></div>`;
+  if (state.capture.phase === "starting" && state.capture.approval === "macos_extension") return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Нужно разрешение macOS</h2><p>Перехватчик ждёт, пока macOS разрешит сетевое расширение <strong>Mitmproxy Redirector</strong>. Открой «Системные настройки» → «Основные» → «Объекты входа и расширения» → «Сетевые расширения» и включи его. В macOS 14 и раньше: «Конфиденциальность и безопасность» → «Разрешить».</p><button class="primary" data-action="open-extension-settings">Открыть настройки</button><p class="field-help">Затем macOS может спросить про конфигурацию прокси — разреши её. Захват продолжит запуск сам.</p></div>`;
   if (state.capture.phase === "starting") return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Запускаем перехват</h2><p>${state.setup.platform === "linux" ? "Если появится запрос прав, подтверди его. " : ""}После подтверждения готовности здесь появятся шаги для Claude.</p></div>`;
   if (needsClientRestart(state)) return restartView();
   if (!item) {
@@ -355,7 +356,7 @@ function renderFooter() {
   renderUpdates();
   renderGnome();
   const phase = state.capture.phase;
-  const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Ошибка соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
+  const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? (state.capture.approval ? "Ждём разрешения macOS" : "Запускаем захват…") : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Ошибка соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
   setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${state.rotation.phase === "interrupted" ? "Замена CA прервана" : text}</span>${state.rotation.phase === "interrupted" ? "" : needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
   const wizardNav = view === "setup" && setupStep === 1 ? `<div class="wizard-nav"><span></span><button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Далее"}</button></div>`
     : view === "setup" && setupStep === 2 ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy ? "disabled" : ""}>Назад</button><button class="primary" data-action="finish-setup" ${busy || needsSetup(state) ? "disabled" : ""}>${busy && pendingAction === "finish-setup" ? "Подключаем…" : "Подключить"}</button></div>` : "";
@@ -484,6 +485,10 @@ async function action(name: string) {
   if (name === "prepare-setup") { await prepareSetup(); return; }
   if (name === "prepare-certificate") { await prepareCertificate(); return; }
   if (name === "setup-back" && !busy) { setupStep = 1; render(); return; }
+  if (name === "open-extension-settings") {
+    if (native) { try { await invoke("open_extension_settings"); } catch (error) { toast = String(error); renderFooter(); } }
+    return;
+  }
   if (!native) {
     if (name === "prepare-replacement") { state.rotation.phase = "pending"; state.rotation.pendingSha256 = "4F:19:" + "AB:".repeat(29) + "91"; state.rotation.pendingCertificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates-next/mitmproxy-ca-cert.cer"; state.rotation.pendingTrusted = false; state.rotation.pendingHosts = state.settings.hosts; view = "settings"; settingsTab = "capture"; }
     if (name === "install-replacement-certificate") state.rotation.pendingTrusted = true;
@@ -644,7 +649,7 @@ root.addEventListener("change", async event => {
 
 const devScenes = [
   ["limits", "Лимиты"], ["low", "Лимиты заканчиваются"], ["exhausted", "Лимит исчерпан"], ["stale", "Устаревшие данные"],
-  ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["system-ca", "CA в системе"], ["stopped", "Перехват выключен"], ["capture-error", "Ошибка запуска захвата"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
+  ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["system-ca", "CA в системе"], ["stopped", "Перехват выключен"], ["capture-error", "Ошибка запуска захвата"], ["starting-extension", "macOS ждёт разрешения"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
   ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Сервер и процессы"], ["setup-2", "3 · Сертификат и доверие"], ["setup-old-2", "3 · Старый недоверенный CA"], ["settings-legacy", "Настройки · старый CA"],
   ["rotation-pending", "CA · подготовлен"], ["rotation-testing", "CA · проверка"], ["rotation-ready", "CA · ответ получен"], ["rotation-untried", "CA · без пробы (лимитов не было)"], ["rotation-cleanup", "CA · очистка"], ["rotation-interrupted", "CA · восстановление"],
 ];
@@ -692,6 +697,7 @@ function setDevScene(scene: string) {
     if (scene === "exhausted") state.profiles[0].status = "rejected";
   }
   if (scene === "stale") state.profiles[0].observedAt = state.now - 7200;
+  if (scene === "starting-extension") { state.profiles = []; state.capture.phase = "starting"; state.capture.startedAt = state.now - 30; state.capture.approval = "macos_extension"; }
   if (scene === "quickstart" || scene === "stopped" || scene === "capture-error") {
     state.profiles = [];
     state.capture.startedAt = scene === "quickstart" ? state.now : null;

@@ -5,7 +5,7 @@ export interface Profile { id: string; host: string; observedAt: number; windows
 export interface Status {
   settings: Settings;
   profiles: Profile[];
-  capture: { phase: "stopped" | "starting" | "listening" | "stopping"; pid: number | null; startedAt: number | null; error: string | null; observation: string | null };
+  capture: { phase: "stopped" | "starting" | "listening" | "stopping"; pid: number | null; startedAt: number | null; error: string | null; observation: string | null; approval?: string | null };
   setup: { platform: string; helperPath: string | null; certificatePath: string; certificateExists: boolean; certificateTrusted: boolean | null; certificateTrustError: string | null; certificateSecurityIssue: string | null; certificateTrustScope: string | null; certificateName: string | null; certificateSha256: string | null; certificateExpiresAt: number | null; certificateFormat: "leaf" | "legacy" | null; certificateHosts: string[]; certificateReplaceable: boolean; installSupported: boolean; launchAtLogin: boolean | null; installation: { phase: string; downloaded: number; total: number | null; error: string | null } };
   rotation: { phase: string; pendingSha256: string | null; pendingCertificatePath: string | null; pendingTrusted: boolean | null; pendingIssue: string | null; pendingHosts: string[]; previousSha256: string | null; previousCertificatePath: string | null; previousTrustScope: string | null; trialReady: boolean; trialOptional: boolean };
   connectionIssue: string | null;
