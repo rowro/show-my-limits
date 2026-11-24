@@ -92,7 +92,9 @@ def tls_server(chain_pem: Path) -> int:
 
 
 def curl(binary: str, url: str, ca: Path, resolve: str | None = None, proxy: str | None = None):
-    args = [binary, "-sS", "-o", os.devnull, "-D", "-", "--cacert", str(ca),
+    # Schannel checks revocation by default; test leaves have no CRL/OCSP endpoint.
+    schannel = "Schannel" in subprocess.run([binary, "--version"], capture_output=True, text=True).stdout
+    args = [binary, "-sS", *(["--ssl-no-revoke"] if schannel else []), "-o", os.devnull, "-D", "-", "--cacert", str(ca),
             "-w", "\nVERIFY=%{ssl_verify_result}\n", "--max-time", "15", url]
     if resolve:
         args += ["--resolve", resolve]
@@ -104,6 +106,9 @@ def curl(binary: str, url: str, ca: Path, resolve: str | None = None, proxy: str
 
 def last_line(text: str) -> str:
     lines = text.strip().splitlines()
+    errors = [l for l in lines if l.startswith("curl: (")]
+    if errors:
+        return errors[0][:160]
     return lines[-1][:160] if lines else ""
 
 
@@ -171,13 +176,13 @@ class ChromeTrust:
             self.reason = "--os-trust refused outside GitHub Actions"
         elif sys.platform == "darwin":
             subprocess.run(["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
-                            "-k", "/Library/Keychains/System.keychain", str(self.ca)], check=True)
+                            "-k", "/Library/Keychains/System.keychain", str(self.ca)], check=True, timeout=60)
             self._undo.append(["sudo", "security", "remove-trusted-cert", "-d", str(self.ca)])
             self.ready = True
         elif sys.platform == "win32":
             thumb = subprocess.run(["powershell", "-NoProfile", "-Command",
                                     f"(Import-Certificate -FilePath '{self.ca}' -CertStoreLocation Cert:\\LocalMachine\\Root).Thumbprint"],
-                                   capture_output=True, text=True, check=True).stdout.strip()
+                                   capture_output=True, text=True, check=True, timeout=60).stdout.strip()
             self._undo.append(["powershell", "-NoProfile", "-Command",
                                f"Remove-Item Cert:\\LocalMachine\\Root\\{thumb}"])
             self.ready = True
