@@ -135,6 +135,40 @@ async fn prepare_certificate(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn prepare_replacement(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Shared>().prepare_replacement(&app))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn start_replacement_trial(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Shared>().start_replacement_trial(&app))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn promote_replacement(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Shared>().promote_replacement(&app))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn stop_replacement_trial(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Shared>().stop_replacement_trial(&app))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn finish_replacement_cleanup(state: State<'_, Shared>) -> Result<(), String> {
+    state.finish_replacement_cleanup()
+}
+
+#[tauri::command]
+fn restore_interrupted_replacement(state: State<'_, Shared>) -> Result<(), String> {
+    state.restore_interrupted_replacement()
+}
+
+#[tauri::command]
 async fn install_helper(app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || app.state::<Shared>().install_helper(&app))
         .await
@@ -171,6 +205,28 @@ async fn install_certificate(app: tauri::AppHandle) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     result.map_err(|_| "Не удалось получить результат установки сертификата.".to_string())?
+}
+
+#[tauri::command]
+async fn install_replacement_certificate(app: tauri::AppHandle) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        handle.state::<PopoverState>().system_dialog.store(true, Ordering::SeqCst);
+        let result = handle.state::<Shared>().install_replacement_certificate();
+        handle.state::<PopoverState>().system_dialog.store(false, Ordering::SeqCst);
+        if let Some(window) = handle.get_webview_window("main") {
+            if !window.is_focused().unwrap_or(false) { let _ = window.hide(); }
+        }
+        let _ = sender.send(result);
+    }).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || receiver.recv())
+        .await.map_err(|e| e.to_string())?
+        .map_err(|_| "Не удалось получить результат установки нового CA.".to_string())?
 }
 
 #[tauri::command]
@@ -463,7 +519,14 @@ pub fn run() {
             start_capture,
             stop_capture,
             prepare_certificate,
+            prepare_replacement,
+            start_replacement_trial,
+            promote_replacement,
+            stop_replacement_trial,
+            finish_replacement_cleanup,
+            restore_interrupted_replacement,
             install_certificate,
+            install_replacement_certificate,
             open_certificate,
             reveal_certificate,
             quit_app

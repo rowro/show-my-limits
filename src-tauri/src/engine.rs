@@ -21,6 +21,28 @@ pub fn now() -> f64 {
         .as_secs_f64()
 }
 
+fn checked_ca_trust(path: &Path) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    { crate::macos_trust::is_trusted(path).ok() }
+    #[cfg(target_os = "windows")]
+    { crate::windows_trust::is_trusted(path).ok() }
+    #[cfg(target_os = "linux")]
+    { crate::certificate::debian_system_trust(path) }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    { let _ = path; None }
+}
+
+fn checked_ca_scope(path: &Path) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    { crate::macos_trust::trust_scope(path).ok().map(str::to_owned) }
+    #[cfg(target_os = "windows")]
+    { crate::windows_trust::trust_scope(path).ok().map(str::to_owned) }
+    #[cfg(target_os = "linux")]
+    { crate::certificate::debian_system_trust(path).map(|present| if present { "system" } else { "none" }.to_owned()) }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    { let _ = path; None }
+}
+
 use crate::settings::normalized_processes;
 pub use crate::settings::{Settings, normalize_host, selector};
 
@@ -56,6 +78,7 @@ pub struct Inner {
     pub capture_issue: Arc<Mutex<Option<String>>>,
     pub run_id: Option<String>,
     pub last_state: Option<ProxyState>,
+    pub rotation_trial: bool,
 }
 pub struct Shared {
     pub paths: Paths,
@@ -98,8 +121,23 @@ pub struct AppStatus {
     pub profiles: Vec<Profile>,
     pub capture: CaptureStatus,
     pub setup: SetupStatus,
+    pub rotation: RotationStatus,
     pub connection_issue: Option<String>,
     pub now: f64,
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotationStatus {
+    pub phase: String,
+    pub pending_sha256: Option<String>,
+    pub pending_certificate_path: Option<String>,
+    pub pending_trusted: Option<bool>,
+    pub pending_issue: Option<String>,
+    pub previous_sha256: Option<String>,
+    pub previous_certificate_path: Option<String>,
+    pub previous_trust_scope: Option<String>,
+    pub trial_ready: bool,
 }
 
 impl AppStatus {
@@ -146,6 +184,7 @@ impl Shared {
                 capture_issue: Arc::new(Mutex::new(None)),
                 run_id: None,
                 last_state: None,
+                rotation_trial: false,
             }),
         })
     }
@@ -262,6 +301,27 @@ impl Shared {
             .into_iter()
             .filter(|profile| inner.settings.hosts.contains(&profile.host))
             .collect();
+        let trial_ready = inner.rotation_trial && active && profiles.iter().any(|profile|
+            profile.observed_at >= inner.started_at && (0.0..120.0).contains(&(timestamp - profile.observed_at)));
+        let (pending, retired) = crate::certificate::rotation_paths(&self.paths.certificates)
+            .expect("application CA path has a parent");
+        let pending_complete = crate::certificate::complete_store(&pending);
+        let previous_complete = crate::certificate::complete_store(&retired);
+        let rotation = RotationStatus {
+            phase: if fs::symlink_metadata(&retired).is_ok() && !crate::certificate::complete_store(&self.paths.certificates) { "interrupted" }
+                else if fs::symlink_metadata(&retired).is_ok() { "cleanup" }
+                else if fs::symlink_metadata(&pending).is_ok() && inner.rotation_trial { "testing" }
+                else if fs::symlink_metadata(&pending).is_ok() { "pending" }
+                else { "none" }.into(),
+            pending_sha256: pending_complete.then(|| crate::certificate::details(&pending.join("mitmproxy-ca-cert.cer"))).flatten().map(|d| d.sha256),
+            pending_certificate_path: pending_complete.then(|| pending.join("mitmproxy-ca-cert.cer").display().to_string()),
+            pending_trusted: pending_complete.then(|| checked_ca_trust(&pending.join("mitmproxy-ca-cert.cer"))).flatten(),
+            pending_issue: crate::certificate::security_issue(&pending).map(str::to_owned),
+            previous_sha256: previous_complete.then(|| crate::certificate::details(&retired.join("mitmproxy-ca-cert.cer"))).flatten().map(|d| d.sha256),
+            previous_certificate_path: previous_complete.then(|| retired.join("mitmproxy-ca-cert.cer").display().to_string()),
+            previous_trust_scope: previous_complete.then(|| checked_ca_scope(&retired.join("mitmproxy-ca-cert.cer"))).flatten(),
+            trial_ready,
+        };
         let connection_issue = state.health.as_ref().filter(|health| active && timestamp - health.observed_at < 120.0
             && profiles.iter().filter(|p| p.host == health.host).all(|p| p.observed_at < health.observed_at))
             .and_then(|health| match health.kind.as_str() {
@@ -350,6 +410,7 @@ impl Shared {
                 install_supported: installer::package(std::env::consts::OS, std::env::consts::ARCH)
                     .is_ok(),
             },
+            rotation,
             connection_issue,
             now: timestamp,
         }
@@ -490,10 +551,49 @@ impl Shared {
     }
 
     pub fn start(&self, app: &AppHandle) -> Result<(), String> {
+        self.start_with_ca(app, false)
+    }
+
+    pub fn start_replacement_trial(&self, app: &AppHandle) -> Result<(), String> {
+        let (pending, retired) = crate::certificate::rotation_paths(&self.paths.certificates)?;
+        if fs::symlink_metadata(retired).is_ok() {
+            return Err("Сначала завершите очистку доверия к предыдущему CA.".into());
+        }
+        if !crate::certificate::complete_store(&pending) {
+            return Err("Сначала подготовьте новый CA.".into());
+        }
+        if checked_ca_trust(&pending.join("mitmproxy-ca-cert.cer")) != Some(true) {
+            return Err("Доверие к новому CA ещё не подтверждено. Действующий захват не остановлен.".into());
+        }
+        self.stop_for_update(app)?;
+        if let Err(error) = self.start_with_ca(app, true) {
+            return match self.start_with_ca(app, false) {
+                Ok(()) => Err(format!("Пробный захват не запустился: {error}. Захват со старым CA восстановлен.")),
+                Err(restore) => Err(format!("Пробный захват не запустился: {error}. Не удалось восстановить старый захват: {restore}.")),
+            };
+        }
+        Ok(())
+    }
+
+    fn start_with_ca(&self, app: &AppHandle, trial: bool) -> Result<(), String> {
+        let ca_dir = if trial {
+            crate::certificate::rotation_paths(&self.paths.certificates)?.0
+        } else {
+            self.paths.certificates.clone()
+        };
+        let ca_file = ca_dir.join("mitmproxy-ca-cert.cer");
         #[cfg(target_os = "macos")]
-        if !crate::macos_trust::is_trusted(&self.paths.certificates.join("mitmproxy-ca-cert.cer"))?
+        if !crate::macos_trust::is_trusted(&ca_file)?
         {
-            return Err("Сертификат больше не доверен. Установите его на шаге подключения.".into());
+            return Err(if trial { "Новый CA ещё не доверен. Подтвердите доверие перед пробным захватом." } else { "Действующий CA больше не доверен. Подтвердите доверие перед запуском." }.into());
+        }
+        #[cfg(target_os = "windows")]
+        if trial && !crate::windows_trust::is_trusted(&ca_file)? {
+            return Err("Новый CA ещё не доверен в Windows.".into());
+        }
+        #[cfg(target_os = "linux")]
+        if trial && crate::certificate::debian_system_trust(&ca_file) != Some(true) {
+            return Err("Новый CA не найден в системном наборе доверия Debian/Ubuntu. Установите его явно и повторите проверку.".into());
         }
 
         let mut inner = self.inner.lock().map_err(|_| "Перехватчик занят.")?;
@@ -509,15 +609,11 @@ impl Shared {
         if system_proxy_active() {
             return Err("Обнаружен другой системный прокси. Завершите его захват перед запуском Show My Limits; настройки сети Show My Limits не изменяет.".into());
         }
-        if !self
-            .paths
-            .certificates
-            .join("mitmproxy-ca-cert.cer")
-            .is_file()
+        if !ca_file.is_file()
         {
             return Err("Сначала создайте сертификат в мастере первоначальной настройки.".into());
         }
-        if !crate::certificate::complete_store(&self.paths.certificates) {
+        if !crate::certificate::complete_store(&ca_dir) {
             return Err("Хранилище CA неполное, содержит ссылку или файлы сертификата не совпадают. Существующие файлы сохранены; проверьте их перед восстановлением из резервной копии.".into());
         }
         let helper = self
@@ -590,7 +686,7 @@ impl Shared {
                 "--allow-hosts",
                 &format!("^(?:{hosts})$"),
                 "--set",
-                &format!("confdir={}", self.paths.certificates.display()),
+                &format!("confdir={}", ca_dir.display()),
                 "--set",
                 "flow_detail=0",
                 "--set",
@@ -619,6 +715,7 @@ impl Shared {
         inner.capture_issue = issue;
         inner.run_id = Some(run_id);
         inner.last_state = None;
+        inner.rotation_trial = trial;
         inner.child = Some(child);
         inner.capture_lock = Some(capture_lock);
         inner.started_at = now();
@@ -690,19 +787,114 @@ impl Shared {
             .map_err(|e| format!("Сертификат установлен, но не удалось сохранить настройки: {e}"))
     }
 
+    pub fn install_replacement_certificate(&self) -> Result<(), String> {
+        let (pending, retired) = crate::certificate::rotation_paths(&self.paths.certificates)?;
+        if fs::symlink_metadata(retired).is_ok() || !crate::certificate::complete_store(&pending) {
+            return Err("Новый CA не подготовлен или прежняя очистка не завершена.".into());
+        }
+        crate::certificate::install(&pending.join("mitmproxy-ca-cert.cer"))
+    }
+
+    pub fn promote_replacement(&self, app: &AppHandle) -> Result<(), String> {
+        let status = self.status(app);
+        if status.rotation.phase != "testing" || !status.rotation.trial_ready {
+            return Err("Дождитесь свежего ответа клиента в пробном захвате новым CA.".into());
+        }
+        if status.rotation.pending_trusted != Some(true) {
+            return Err("Доверие к новому CA не подтверждено.".into());
+        }
+        self.stop_for_update(app)?;
+        let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
+        let _guard = self.certificate_installation.try_lock()
+            .map_err(|_| "Замена CA уже выполняется.")?;
+        let _capture = crate::coordination::lock(&self.paths.proxy, "capture")?;
+        let (pending, _) = crate::certificate::rotation_paths(&self.paths.certificates)?;
+        if checked_ca_trust(&pending.join("mitmproxy-ca-cert.cer")) != Some(true) {
+            return Err("Доверие к новому CA исчезло; старый CA сохранён.".into());
+        }
+        crate::certificate::promote_replacement(&self.paths.certificates)?;
+        self.inner.lock().map_err(|_| "Перехватчик занят.")?.rotation_trial = false;
+        drop(_capture);
+        self.start(app).map_err(|error| format!("Новый CA активен, но захват не запустился: {error}. Повторите запуск; прежний CA сохранён для очистки."))
+    }
+
+    pub fn stop_replacement_trial(&self, app: &AppHandle) -> Result<(), String> {
+        if !self.inner.lock().map_err(|_| "Перехватчик занят.")?.rotation_trial {
+            return Ok(());
+        }
+        self.stop_for_update(app)?;
+        self.inner.lock().map_err(|_| "Перехватчик занят.")?.rotation_trial = false;
+        self.start(app)
+    }
+
+    pub fn finish_replacement_cleanup(&self) -> Result<(), String> {
+        let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
+        let (_, retired) = crate::certificate::rotation_paths(&self.paths.certificates)?;
+        if !crate::certificate::complete_store(&self.paths.certificates) {
+            return Err("Действующий CA повреждён; старый ключ сохранён для восстановления.".into());
+        }
+        if !crate::certificate::complete_store(&retired) {
+            return Err("Прежний CA повреждён или уже удалён. Проверьте его вручную.".into());
+        }
+        let old_cert = retired.join("mitmproxy-ca-cert.cer");
+        if checked_ca_scope(&old_cert).as_deref() != Some("none")
+            || checked_ca_trust(&old_cert) != Some(false) {
+            return Err("Прежнему CA всё ещё доверяет проверенное хранилище ОС или проверить доверие не удалось. Удалите доверие к точному отпечатку и повторите.".into());
+        }
+        #[cfg(target_os = "macos")]
+        if crate::macos_trust::present_in_checked_keychains(&old_cert)? {
+            return Err("Прежний CA всё ещё находится в связке Вход или Система. Удалите сертификат по точному отпечатку и повторите.".into());
+        }
+        #[cfg(target_os = "linux")]
+        if crate::certificate::debian_source_trust(&old_cert) != Some(false) {
+            return Err("Файл прежнего CA ещё находится в источниках доверия Debian/Ubuntu или их не удалось проверить. Удалите точный файл и обновите сертификаты ОС.".into());
+        }
+        fs::remove_dir_all(&retired).map_err(|e| format!("Не удалось удалить закрытый ключ прежнего CA: {e}"))?;
+        Ok(())
+    }
+
+    pub fn restore_interrupted_replacement(&self) -> Result<(), String> {
+        let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
+        let _capture = crate::coordination::lock(&self.paths.proxy, "capture")?;
+        crate::certificate::restore_interrupted_replacement(&self.paths.certificates)
+    }
+
     pub fn prepare_certificate(&self, app: &AppHandle) -> Result<(), String> {
         let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
         let _guard = self
             .certificate_installation
             .try_lock()
             .map_err(|_| "Подготовка сертификата уже выполняется.")?;
-        if self
-            .paths
-            .certificates
-            .join("mitmproxy-ca-cert.cer")
-            .is_file()
-        {
-            return if crate::certificate::complete_store(&self.paths.certificates) { Ok(()) } else {
+        self.prepare_certificate_at(app, &self.paths.certificates)
+    }
+
+    pub fn prepare_replacement(&self, app: &AppHandle) -> Result<(), String> {
+        let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
+        let _guard = self
+            .certificate_installation
+            .try_lock()
+            .map_err(|_| "Подготовка сертификата уже выполняется.")?;
+        if !crate::certificate::complete_store(&self.paths.certificates) {
+            return Err("Действующий CA повреждён. Новый CA не создавался; сначала проверьте файлы и резервную копию.".into());
+        }
+        let (pending, retired) = crate::certificate::rotation_paths(&self.paths.certificates)?;
+        if fs::symlink_metadata(retired).is_ok() {
+            return Err("Сначала завершите очистку доверия к предыдущему CA.".into());
+        }
+        self.prepare_certificate_at(app, &pending)?;
+        let old = crate::certificate::details(&self.paths.certificates.join("mitmproxy-ca-cert.cer"))
+            .ok_or("Не удалось прочитать действующий CA.")?;
+        let new = crate::certificate::details(&pending.join("mitmproxy-ca-cert.cer"))
+            .ok_or("Не удалось прочитать новый CA.")?;
+        if old.sha256 == new.sha256 {
+            return Err("Новый CA совпадает с действующим; переключение невозможно.".into());
+        }
+        Ok(())
+    }
+
+    fn prepare_certificate_at(&self, app: &AppHandle, destination: &Path) -> Result<(), String> {
+        if destination.join("mitmproxy-ca-cert.cer").is_file() {
+            return if crate::certificate::complete_store(destination) { Ok(()) } else {
                 Err("Хранилище CA неполное, содержит ссылку или закрытый ключ не соответствует сертификату. Существующие файлы сохранены без изменений.".into())
             };
         }
@@ -715,9 +907,7 @@ impl Shared {
         let helper = self
             .find_helper(app, &settings)
             .ok_or("Не найден mitmdump. Укажите путь к нему в настройках.")?;
-        let parent = self
-            .paths
-            .certificates
+        let parent = destination
             .parent()
             .ok_or("Не найден каталог сертификатов.")?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -785,7 +975,7 @@ impl Shared {
             && crate::certificate::complete_store(&generated);
         if ready {
             crate::certificate::secure_new_store(&generated)?;
-            publish_new_ca(&generated, &self.paths.certificates)
+            publish_new_ca(&generated, destination)
         } else {
             Err("Не удалось подготовить сертификат. Проверьте установленный mitmdump.".into())
         }
@@ -1116,6 +1306,7 @@ mod tests {
                 capture_issue: Arc::new(Mutex::new(None)),
                 run_id: None,
                 last_state: None,
+                rotation_trial: false,
             }),
             installation: Mutex::new(Installation::default()),
             certificate_installation: Mutex::new(()),
@@ -1190,6 +1381,7 @@ mod tests {
                 certificate_exists: true,
                 ..Default::default()
             },
+            rotation: RotationStatus::default(),
             connection_issue: None,
             now: 0.0,
         };
@@ -1225,6 +1417,7 @@ mod tests {
             },
             profiles: vec![],
             capture: CaptureStatus::default(),
+            rotation: RotationStatus::default(),
             connection_issue: None,
             now: 0.0,
         };

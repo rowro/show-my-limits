@@ -65,7 +65,7 @@ pub fn render(status: &AppStatus) -> String {
         "quota_fresh"
     };
     format!(
-        "Show My Limits {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture: {}\nFresh quota: {}\nStatus: {}",
+        "Show My Limits {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCA replacement: {}\nCapture: {}\nFresh quota: {}\nStatus: {}",
         env!("CARGO_PKG_VERSION"),
         status.setup.platform,
         session,
@@ -75,6 +75,7 @@ pub fn render(status: &AppStatus) -> String {
         scope,
         ca_lifetime,
         if status.setup.certificate_security_issue.is_some() { "needs review" } else { "no issue detected" },
+        match status.rotation.phase.as_str() { "pending" | "testing" | "cleanup" | "interrupted" => status.rotation.phase.as_str(), _ => "none/unknown" },
         status.capture.phase,
         if fresh { "yes" } else { "no" },
         reason,
@@ -88,7 +89,7 @@ mod tests {
     fn report_does_not_expose_paths_hosts_or_raw_errors() {
         let mut status = AppStatus {
             settings: Default::default(), profiles: vec![], capture: Default::default(),
-            setup: Default::default(), connection_issue: Some("secret.example".into()), now: 1000.0,
+            setup: Default::default(), rotation: Default::default(), connection_issue: Some("secret.example".into()), now: 1000.0,
         };
         status.settings.hosts = vec!["secret.example".into()];
         status.setup.helper_path = Some("/private/user/helper".into());
@@ -103,7 +104,7 @@ mod tests {
     fn report_groups_ca_expiry_without_exposing_exact_date() {
         let mut status = AppStatus {
             settings: Default::default(), profiles: vec![], capture: Default::default(),
-            setup: Default::default(), connection_issue: None, now: 1000.0,
+            setup: Default::default(), rotation: Default::default(), connection_issue: None, now: 1000.0,
         };
         status.setup.certificate_expires_at = Some(1000 + 15 * 86400);
         let report = render(&status);
@@ -114,7 +115,7 @@ mod tests {
     fn report_classifies_network_failure_without_host() {
         let mut status = AppStatus {
             settings: Default::default(), profiles: vec![], capture: Default::default(),
-            setup: Default::default(), connection_issue: Some("secret.example is unreachable".into()), now: 1000.0,
+            setup: Default::default(), rotation: Default::default(), connection_issue: Some("secret.example is unreachable".into()), now: 1000.0,
         };
         status.setup.helper_path = Some("/private/helper".into());
         status.setup.certificate_exists = true;

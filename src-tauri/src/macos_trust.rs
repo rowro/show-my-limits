@@ -104,6 +104,17 @@ pub fn trust_scope(path: &Path) -> Result<&'static str, String> {
     })
 }
 
+pub fn present_in_checked_keychains(path: &Path) -> Result<bool, String> {
+    let bytes = fs::read(path).map_err(|e| format!("Не удалось прочитать сертификат: {e}"))?;
+    let (_, pem) = x509_parser::pem::parse_x509_pem(&bytes)
+        .map_err(|_| "Некорректный сертификат.".to_string())?;
+    let certificate = SecCertificate::from_der(&pem.contents).map_err(|e| e.to_string())?;
+    let user = SecKeychain::default().map_err(|e| e.to_string())?;
+    let system = SecKeychain::open("/Library/Keychains/System.keychain")
+        .map_err(|e| e.to_string())?;
+    Ok(contains_certificate(&user, &certificate)? || contains_certificate(&system, &certificate)?)
+}
+
 pub fn install(path: &Path) -> Result<(), String> {
     let bytes = fs::read(path).map_err(|e| format!("Не удалось прочитать сертификат: {e}"))?;
     let (_, pem) =
@@ -183,5 +194,8 @@ mod tests {
         let certificate = SecCertificate::from_der(&pem.contents).unwrap();
         let keychain = SecKeychain::default().unwrap();
         assert!(!contains_certificate(&keychain, &certificate).unwrap());
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        fs::write(fixture.path(), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        assert!(!present_in_checked_keychains(fixture.path()).unwrap());
     }
 }

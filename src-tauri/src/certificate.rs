@@ -58,6 +58,40 @@ pub fn debian_system_trust(cert_path: &Path) -> Option<bool> {
     certificate_in_pem_bundle(cert_path, Path::new("/etc/ssl/certs/ca-certificates.crt"))
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn source_tree_contains(cert_path: &Path, roots: &[&Path]) -> Option<bool> {
+    let mut pending: Vec<_> = roots.iter().map(|root| root.to_path_buf()).collect();
+    while let Some(path) = pending.pop() {
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        for entry in entries {
+            let entry = entry.ok()?;
+            let kind = entry.file_type().ok()?;
+            if kind.is_symlink() { return None; }
+            if kind.is_dir() { pending.push(entry.path()); }
+            else if kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "crt") {
+                match certificate_in_pem_bundle(cert_path, &entry.path()) {
+                    Some(true) => return Some(true),
+                    Some(false) => {},
+                    None => return None,
+                }
+            }
+        }
+    }
+    Some(false)
+}
+
+#[cfg(target_os = "linux")]
+pub fn debian_source_trust(cert_path: &Path) -> Option<bool> {
+    source_tree_contains(cert_path, &[
+        Path::new("/usr/local/share/ca-certificates"),
+        Path::new("/usr/share/ca-certificates"),
+    ])
+}
+
 /// Refuse to let a helper regenerate a partially deleted existing CA.
 pub fn complete_store(directory: &Path) -> bool {
     if !fs::symlink_metadata(directory).is_ok_and(|m| m.file_type().is_dir()) {
@@ -89,6 +123,51 @@ pub fn complete_store(directory: &Path) -> bool {
         _ => return false,
     };
     key_pair.is_ok_and(|pair| pair.public().as_ref() == parsed_cert.public_key().subject_public_key.data.as_ref())
+}
+
+pub fn rotation_paths(active: &Path) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let parent = active.parent().ok_or("Не найден каталог данных CA.")?;
+    Ok((parent.join("certificates-next"), parent.join("certificates-previous")))
+}
+
+/// The caller must first stop the trial capture and prove a fresh same-run quota response.
+/// Keep the previous key until separate, explicit trust cleanup succeeds.
+pub fn promote_replacement(active: &Path) -> Result<(), String> {
+    let (pending, retired) = rotation_paths(active)?;
+    if !complete_store(active) || !complete_store(&pending) {
+        return Err("Действующий или новый CA повреждён; замена не выполнялась.".into());
+    }
+    let old = details(&active.join("mitmproxy-ca-cert.cer"))
+        .ok_or("Не удалось прочитать действующий CA.")?;
+    let new = details(&pending.join("mitmproxy-ca-cert.cer"))
+        .ok_or("Не удалось прочитать новый CA.")?;
+    if old.sha256 == new.sha256 {
+        return Err("Новый CA совпадает с действующим; нужен новый ключ.".into());
+    }
+    if fs::symlink_metadata(&retired).is_ok() {
+        return Err("Предыдущий CA ещё ожидает удаления доверия; новая замена недоступна.".into());
+    }
+    fs::rename(active, &retired)
+        .map_err(|e| format!("Не удалось сохранить прежний CA: {e}"))?;
+    if let Err(error) = fs::rename(&pending, active) {
+        if let Err(rollback) = fs::rename(&retired, active) {
+            return Err(format!("Не удалось переключить CA ({error}) и вернуть прежний ({rollback}). Оба каталога сохранены; требуется ручная проверка."));
+        }
+        return Err(format!("Не удалось переключить CA: {error}. Прежний CA восстановлен."));
+    }
+    Ok(())
+}
+
+pub fn restore_interrupted_replacement(active: &Path) -> Result<(), String> {
+    let (_, retired) = rotation_paths(active)?;
+    if fs::symlink_metadata(active).is_ok() {
+        return Err("Действующий каталог CA существует; автоматическое восстановление недоступно.".into());
+    }
+    if !complete_store(&retired) {
+        return Err("Прежний CA повреждён; не удалось безопасно восстановить его.".into());
+    }
+    fs::rename(&retired, active)
+        .map_err(|e| format!("Не удалось восстановить прежний CA: {e}"))
 }
 
 /// Limit access to newly generated CA material before publishing the store.
@@ -232,6 +311,49 @@ mod tests {
         fs::write(directory.path().join("mitmproxy-ca.pem"), mismatched).unwrap();
         assert!(!complete_store(directory.path()));
     }
+    #[cfg(unix)]
+    #[test]
+    fn rotation_keeps_the_previous_ca_and_refuses_an_unfinished_cleanup() {
+        use std::process::{Command, Stdio};
+        if Command::new("openssl").arg("version").output().is_err() { return; }
+        let root = tempfile::tempdir().unwrap();
+        let active = root.path().join("certificates");
+        let (pending, retired) = rotation_paths(&active).unwrap();
+        for (path, name) in [(&active, "Old"), (&pending, "New")] {
+            fs::create_dir(path).unwrap();
+            let key = path.join("key.pem");
+            let cert = path.join("mitmproxy-ca-cert.cer");
+            let status = Command::new("openssl")
+                .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj"])
+                .arg(format!("/CN={name}"))
+                .args(["-days", "1", "-keyout"])
+                .arg(&key).arg("-out").arg(&cert)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+            assert!(status.success());
+            let mut combined = fs::read(&key).unwrap();
+            combined.extend_from_slice(&fs::read(&cert).unwrap());
+            fs::write(path.join("mitmproxy-ca.pem"), combined).unwrap();
+            fs::write(path.join("mitmproxy-dhparam.pem"), b"dh parameters").unwrap();
+        }
+        let old = details(&active.join("mitmproxy-ca-cert.cer")).unwrap().sha256;
+        let new = details(&pending.join("mitmproxy-ca-cert.cer")).unwrap().sha256;
+        fs::write(pending.join("mitmproxy-ca.pem"), b"broken key").unwrap();
+        assert!(promote_replacement(&active).is_err());
+        assert_eq!(details(&active.join("mitmproxy-ca-cert.cer")).unwrap().sha256, old);
+        assert!(!retired.exists());
+        let mut combined = fs::read(pending.join("key.pem")).unwrap();
+        combined.extend_from_slice(&fs::read(pending.join("mitmproxy-ca-cert.cer")).unwrap());
+        fs::write(pending.join("mitmproxy-ca.pem"), combined).unwrap();
+        promote_replacement(&active).unwrap();
+        assert_eq!(details(&active.join("mitmproxy-ca-cert.cer")).unwrap().sha256, new);
+        assert_eq!(details(&retired.join("mitmproxy-ca-cert.cer")).unwrap().sha256, old);
+        assert!(promote_replacement(&active).is_err());
+        assert!(restore_interrupted_replacement(&active).is_err());
+        fs::rename(&active, &pending).unwrap();
+        restore_interrupted_replacement(&active).unwrap();
+        assert_eq!(details(&active.join("mitmproxy-ca-cert.cer")).unwrap().sha256, old);
+        assert_eq!(details(&pending.join("mitmproxy-ca-cert.cer")).unwrap().sha256, new);
+    }
     #[test]
     #[ignore = "read-only check of an explicitly provided CA store; never changes OS trust"]
     fn real_ca_store_probe() {
@@ -280,6 +402,19 @@ mod tests {
         assert_eq!(certificate_in_pem_bundle(&cert, &bundle), Some(true));
         fs::write(&bundle, b"-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n").unwrap();
         assert_eq!(certificate_in_pem_bundle(&cert, &bundle), Some(false));
+    }
+    #[test]
+    fn cleanup_checks_exact_ca_in_debian_source_files() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("sources");
+        fs::create_dir(&source).unwrap();
+        let cert = root.path().join("old.cer");
+        fs::write(&cert, include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        assert_eq!(source_tree_contains(&cert, &[&source]), Some(false));
+        fs::write(source.join("different.crt"), b"-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n").unwrap();
+        assert_eq!(source_tree_contains(&cert, &[&source]), Some(false));
+        fs::write(source.join("old.crt"), include_bytes!("../tests/fixtures/test-ca.pem")).unwrap();
+        assert_eq!(source_tree_contains(&cert, &[&source]), Some(true));
     }
     #[cfg(unix)]
     #[test]

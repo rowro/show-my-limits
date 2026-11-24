@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { age, countdown, demoStatus, certificateTrusted, needsSetup, needsClientRestart, isFresh, percentage, remaining, type Profile, type Settings, type Status, type Theme } from "./model";
 import { setMarkupIfChanged } from "./dom";
-import { linuxTrustCommands } from "./certificates";
+import { linuxTrustCommands, linuxReplacementTrustCommands } from "./certificates";
 import "./styles.css";
 import brandLogo from "./assets/show-my-limits.svg";
 
@@ -37,7 +37,7 @@ let renderedView = "";
 let renderedMarkup = "";
 let state: Status = { settings: { theme: "system", hosts: [], clients: ["desktop", "terminal"], additionalProcesses: [], selectedProfile: null, helperPath: "", certificateTrustConfirmed: false },
   profiles: [], capture: { phase: "stopped", pid: null, startedAt: null, error: null, observation: null },
-  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: null, certificateSha256: null, certificateExpiresAt: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, connectionIssue: null, now: Date.now() / 1000 };
+  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: null, certificateSha256: null, certificateExpiresAt: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, rotation: { phase: "none", pendingSha256: null, pendingCertificatePath: null, pendingTrusted: null, pendingIssue: null, previousSha256: null, previousCertificatePath: null, previousTrustScope: null, trialReady: false }, connectionIssue: null, now: Date.now() / 1000 };
 if (demo) { state = demoStatus(); view = "overview";
   if (new URLSearchParams(location.search).get("demo") === "setup") {
     state.settings.hosts = []; state.profiles = []; state.capture.phase = "stopped"; state.capture.startedAt = null; view = "setup";
@@ -107,7 +107,9 @@ function shell() {
 function render() {
   document.documentElement.dataset.platform = state.setup.platform;
   if (deferDuringPointer(render)) return;
-  if (needsSetup(state)) {
+  if (state.rotation.phase === "interrupted") {
+    if (view === "setup") view = "overview";
+  } else if (needsSetup(state)) {
     const required = requiredSetupStep();
     if (view !== "setup" || setupStep > required) setupStep = required;
     view = "setup";
@@ -208,6 +210,7 @@ function certificateTrustDetails() {
 }
 
 function overview() {
+  if (state.rotation.phase === "interrupted") return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Замена CA прервана</h2><p>Прежний CA сохранён, но действующий каталог не завершён. Восстановите прежний CA перед новым захватом.</p><button class="primary" data-action="restore-interrupted-replacement">Восстановить прежний CA</button></div>`;
   const item = profile();
   if (needsSetup(state)) return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Сначала подключим Claude</h2><p>Подготовь перехватчик, сертификат<br>и выбери сервер. Затем появятся лимиты.</p><button class="primary" data-view="setup">Перейти к подключению${icon("arrow")}</button></div>`;
   if (state.capture.phase === "starting") return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Запускаем перехват</h2><p>${state.setup.platform === "linux" ? "Если появится запрос прав, подтверди его. " : ""}После подтверждения готовности здесь появятся шаги для Claude.</p></div>`;
@@ -269,6 +272,18 @@ function connectionFields(s: Settings, suggestDefault = false) {
 
 let settingsTab = "general";
 
+function rotationPanel() {
+  const r = state.rotation;
+  const current = esc(state.setup.certificateSha256 || "не удалось прочитать");
+  if (r.phase === "interrupted") return `<fieldset><legend>Замена CA прервана</legend><p class="field-help">Прежний CA сохранён отдельно. Восстановление вернёт его в действующий каталог; новый CA останется подготовленным для повторной проверки.</p><button type="button" class="secondary" data-action="restore-interrupted-replacement" ${busy ? "disabled" : ""}>Восстановить прежний CA</button></fieldset>`;
+  if (r.phase === "none") return `<fieldset><legend>Замена CA</legend><p class="field-help">Действующий CA остаётся на месте, пока новый не получит доверие и свежий ответ клиента. После переключения старое доверие удаляется отдельно.</p><button type="button" class="secondary" data-action="prepare-replacement" ${busy ? "disabled" : ""}>Начать замену CA</button></fieldset>`;
+  if (r.phase === "cleanup") return `<fieldset><legend>Очистка старого CA</legend><p class="field-help">Новый CA активен. Удалите доверие к прежнему сертификату с точным SHA-256:</p><code class="fingerprint">${esc(r.previousSha256 || "не удалось прочитать")}</code><p class="field-help">Область старого доверия: <strong>${esc(r.previousTrustScope || "не удалось проверить")}</strong>. ${state.setup.platform === "linux" ? "В Debian/Ubuntu удалите прежний файл из /usr/local/share/ca-certificates и выполните sudo update-ca-certificates. Если имя файла другое, найдите его по отпечатку." : state.setup.platform === "macos" ? "Удалите прежний сертификат по отпечатку из Связки ключей (Вход и/или Система). Системное удаление может потребовать подтверждения macOS." : "Удалите прежний сертификат по отпечатку из хранилища Current User или Local Machine Root."}</p><p class="field-help">Закрытый ключ прежнего CA будет удалён только после проверки, что старое доверие отсутствует в проверенных хранилищах.</p><button type="button" class="secondary" data-action="finish-replacement-cleanup" ${busy ? "disabled" : ""}>Проверить удаление и завершить</button></fieldset>`;
+  const newHash = esc(r.pendingSha256 || "не удалось прочитать");
+  const trust = r.pendingTrusted === true ? "Новое доверие подтверждено" : r.pendingTrusted === false ? "Новому CA ещё не доверяют" : "Доверие к новому CA не удалось проверить";
+  const trustAction = state.setup.platform === "linux" && r.pendingCertificatePath && r.pendingSha256 ? `<p class="field-help">Установите новый CA отдельно от старого. Команды добавят системное доверие:</p><pre class="trust-command"><code>${esc(linuxReplacementTrustCommands(r.pendingCertificatePath, r.pendingSha256))}</code></pre><button type="button" class="secondary" data-action="copy-replacement-trust">Скопировать команды</button>` : state.setup.platform === "linux" ? "" : `<button type="button" class="secondary" data-action="install-replacement-certificate" ${busy ? "disabled" : ""}>Установить доверие к новому CA</button>`;
+  return `<fieldset><legend>Замена CA</legend><p class="field-help">Выбранный сервер: <strong>${esc(state.settings.hosts[0] || "не указан")}</strong>. При необходимости измените его в поле «Сервер» ниже и сохраните настройки до проверки.</p><p class="field-help">Действующий CA: <code class="fingerprint">${current}</code></p><p class="field-help">Новый CA: <code class="fingerprint">${newHash}</code></p><p class="field-help"><strong>${trust}</strong>. ${esc(r.pendingIssue || "Старый ключ и доверие пока не менялись.")}</p>${r.pendingTrusted === true ? "" : trustAction}${r.phase === "testing" ? `<p class="field-help">Пробный захват новым CA ${r.trialReady ? "получил свежий ответ с лимитами" : "ждёт свежий ответ с лимитами"}. Полностью перезапустите клиент и отправьте сообщение на указанный сервер.</p><button type="button" class="secondary" data-action="promote-replacement" ${busy || !r.trialReady ? "disabled" : ""}>Сделать новый CA действующим</button><button type="button" class="text-button" data-action="stop-replacement-trial" ${busy ? "disabled" : ""}>Вернуться к старому захвату</button>` : `<button type="button" class="secondary" data-action="start-replacement-trial" ${busy || r.pendingTrusted !== true ? "disabled" : ""}>Проверить новый CA в захвате</button>`}</fieldset>`;
+}
+
 function settings() {
   const s = state.settings;
   return `<form id="settings-form"><div class="section-heading"><h2>Настройки</h2></div>
@@ -281,6 +296,7 @@ function settings() {
     </div><div id="settings-updates" role="tabpanel" aria-labelledby="tab-updates" ${settingsTab !== "updates" ? "hidden" : ""}><section id="updates-section"></section></div>
     <div id="settings-capture" role="tabpanel" aria-labelledby="tab-capture" ${settingsTab !== "capture" ? "hidden" : ""}>
     <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p>${certificateTrustDetails()}<details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Вход» текущего пользователя открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="${state.setup.platform === "windows" ? "install-certificate" : "open-certificate"}">${state.setup.platform === "windows" ? "Установить текущий сертификат" : "Открыть сертификат"}</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
+    <section id="rotation-section">${rotationPanel()}</section>
     ${connectionFields({ ...s, ...(settingsDraft || {}) })}
     <p class="field-help">Если изменить сервер или процессы, захват перезапустится при сохранении.</p></div></form>`;
 }
@@ -290,6 +306,11 @@ function renderGnome() {
   const section = document.querySelector<HTMLElement>("#gnome-section");
   if (!section) return;
   setMarkupIfChanged(section, `${state.setup.platform === "linux" ? `<fieldset><legend>Панель GNOME</legend><p class="field-help">${esc(gnomeStatus?.message || "Нативные проценты и прогресс для GNOME 46 (Ubuntu 24.04).")}</p>${gnomeStatus?.supported ? `<button type="button" class="secondary" data-action="install-gnome" ${busy ? "disabled" : ""}>${gnomeStatus.installed ? "Обновить расширение" : "Установить расширение"}</button>` : ""}${gnomeStatus?.pending ? `<button type="button" class="secondary" data-action="gnome-logout">Выйти из сеанса…</button><p class="field-help">Ubuntu попросит подтвердить выход. После входа расширение включится автоматически.</p>` : ""}</fieldset>` : ""}`);
+}
+function renderRotation() {
+  if (deferDuringPointer(renderRotation)) return;
+  const section = document.querySelector("#rotation-section");
+  if (section) setMarkupIfChanged(section, rotationPanel());
 }
 
 function renderUpdates() {
@@ -305,7 +326,7 @@ function renderFooter() {
   renderGnome();
   const phase = state.capture.phase;
   const text = phase === "stopped" ? "Перехват выключен" : phase === "starting" ? "Запускаем захват…" : phase === "stopping" ? "Останавливаем…" : state.setup.certificateExists && state.setup.certificateTrusted === false ? "Нужно доверие к CA" : state.connectionIssue ? "Ошибка соединения" : confirmed() ? "Лимиты получены" : "Ждём ответ Claude";
-  setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${text}</span>${needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
+  setMarkupIfChanged(document.querySelector("#header-status")!, `<span class="capture-status"><i class="status-dot ${confirmed() ? "green" : phase !== "stopped" ? "amber" : ""}"></i>${state.rotation.phase === "interrupted" ? "Замена CA прервана" : text}</span>${state.rotation.phase === "interrupted" ? "" : needsSetup(state) && phase === "stopped" ? '<button class="capture-button start" data-view="setup">Подключить</button>' : `<button class="capture-button ${phase === "stopped" ? "start" : ""}" data-action="${phase === "stopped" ? "start" : "stop"}" ${busy || phase === "stopping" ? "disabled" : ""}>${phase === "stopped" ? "Запустить" : "Остановить"}</button>`}`);
   const wizardNav = view === "setup" && setupStep === 2 ? `<div class="wizard-nav"><button class="secondary" data-action="setup-back" ${busy ? "disabled" : ""}>Назад</button><button class="primary" type="submit" form="setup-form" ${busy ? "disabled" : ""}>${busy ? "Подключаем…" : "Подключить"}</button></div>` : "";
   setMarkupIfChanged(document.querySelector("#screen-actions")!, `${wizardNav}${view === "settings" ? `<button class="primary screen-save" type="submit" form="settings-form" ${busy ? "disabled" : ""}>${busy ? "Сохраняем…" : "Сохранить"}</button>` : ""}`);
   const updatePhase = updateState.phase;
@@ -323,7 +344,7 @@ function renderFooter() {
 
 async function refresh() {
   if (!native) return;
-  try { state = await invoke<Status>("get_status"); if (firstStatus) { view = needsSetup(state) ? "setup" : "overview"; setupStep = requiredSetupStep(); firstStatus = false; } applyTheme(state.settings.theme); if (view !== "settings" || needsSetup(state)) render(); else renderFooter(); }
+  try { state = await invoke<Status>("get_status"); if (firstStatus) { view = needsSetup(state) ? "setup" : "overview"; setupStep = requiredSetupStep(); firstStatus = false; } applyTheme(state.settings.theme); if (view !== "settings" || needsSetup(state)) render(); else { renderRotation(); renderFooter(); } }
   catch { toast = "Не удалось получить состояние Show My Limits."; renderFooter(); }
 }
 
@@ -401,6 +422,14 @@ async function action(name: string) {
     }
     return;
   }
+  if (name === "copy-replacement-trust" && state.rotation.pendingCertificatePath && state.rotation.pendingSha256) {
+    try {
+      await navigator.clipboard.writeText(linuxReplacementTrustCommands(state.rotation.pendingCertificatePath, state.rotation.pendingSha256));
+      const button = document.querySelector('[data-action="copy-replacement-trust"]');
+      if (button) button.textContent = "Скопировано";
+    } catch { toast = "Не удалось скопировать. Выдели команды и скопируй их вручную."; renderFooter(); }
+    return;
+  }
   if (["check-update", "install-update", "open-releases"].includes(name)) {
     if (!native) { updateState.phase=name === "check-update" ? "current" : "idle"; renderFooter(); return; }
     toast = null;
@@ -415,6 +444,12 @@ async function action(name: string) {
   if (name === "prepare-setup") { await prepareSetup(); return; }
   if (name === "setup-back" && !busy) { setupStep = 1; render(); return; }
   if (!native) {
+    if (name === "prepare-replacement") { state.rotation.phase = "pending"; state.rotation.pendingSha256 = "4F:19:" + "AB:".repeat(29) + "91"; state.rotation.pendingCertificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates-next/mitmproxy-ca-cert.cer"; state.rotation.pendingTrusted = false; view = "settings"; settingsTab = "capture"; }
+    if (name === "install-replacement-certificate") state.rotation.pendingTrusted = true;
+    if (name === "start-replacement-trial") { state.rotation.phase = "testing"; state.rotation.trialReady = false; state.profiles = []; state.capture.phase = "listening"; }
+    if (name === "promote-replacement") { state.rotation.phase = "cleanup"; state.rotation.previousSha256 = state.setup.certificateSha256; state.rotation.previousTrustScope = "system"; state.setup.certificateSha256 = state.rotation.pendingSha256; }
+    if (name === "stop-replacement-trial") { state.rotation.phase = "pending"; state.rotation.trialReady = false; }
+    if (name === "finish-replacement-cleanup" || name === "restore-interrupted-replacement") state.rotation.phase = "none";
     if (["install-certificate", "confirm-trust"].includes(name)) { state.settings.certificateTrustConfirmed = true; state.setup.certificateTrusted = true; setupStep = 2; }
     if (name === "start") { state.capture.phase = "starting"; state.capture.startedAt = state.now; state.capture.error = null; }
     if (name === "stop") state.capture.phase = "stopped";
@@ -436,6 +471,13 @@ async function action(name: string) {
     }
     if (name === "start") { await invoke("start_capture"); view = "overview"; }
     if (name === "stop") await invoke("stop_capture");
+    if (name === "prepare-replacement") await invoke("prepare_replacement");
+    if (name === "install-replacement-certificate") await invoke("install_replacement_certificate");
+    if (name === "start-replacement-trial") await invoke("start_replacement_trial");
+    if (name === "promote-replacement") await invoke("promote_replacement");
+    if (name === "stop-replacement-trial") await invoke("stop_replacement_trial");
+    if (name === "finish-replacement-cleanup") await invoke("finish_replacement_cleanup");
+    if (name === "restore-interrupted-replacement") await invoke("restore_interrupted_replacement");
     if (name === "install-certificate") await invoke("install_certificate");
     if (name === "open-certificate") await invoke("open_certificate");
     if (name === "reveal-certificate") await invoke("reveal_certificate");
@@ -444,7 +486,7 @@ async function action(name: string) {
       && certificateTrusted(state)) setupStep = 2;
     if (view === "setup") render();
   } catch (error) { toast = String(error); }
-  finally { busy = false; pendingAction = ""; if (view === "setup") render(); else renderFooter(); }
+  finally { busy = false; pendingAction = ""; if (view === "setup") render(); else { renderRotation(); renderFooter(); } }
 }
 
 root.addEventListener("mousedown", event => {
@@ -559,6 +601,7 @@ const devScenes = [
   ["limits", "Лимиты"], ["low", "Лимиты заканчиваются"], ["exhausted", "Лимит исчерпан"], ["stale", "Устаревшие данные"],
   ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["system-ca", "CA в системе"], ["stopped", "Перехват выключен"], ["capture-error", "Ошибка запуска захвата"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
   ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Доверие"], ["setup-2", "3 · Сервер и процессы"],
+  ["rotation-pending", "CA · подготовлен"], ["rotation-testing", "CA · проверка"], ["rotation-ready", "CA · ответ получен"], ["rotation-cleanup", "CA · очистка"], ["rotation-interrupted", "CA · восстановление"],
 ];
 function setDevScene(scene: string) {
   if (!devTools) return;
@@ -572,7 +615,24 @@ function setDevScene(scene: string) {
   if (["linux", "windows", "macos"].includes(platform || "")) state.setup.platform = platform!;
   if (state.setup.platform === "linux") state.setup.certificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates/mitmproxy-ca-cert.cer";
   setupDraft = null; settingsDraft = null; toast = null; setupError = null; busy = false; pendingAction = "";
-  view = scene === "settings" ? "settings" : "overview";
+  view = scene === "settings" || scene.startsWith("rotation-") && scene !== "rotation-interrupted" ? "settings" : "overview";
+  if (scene.startsWith("rotation-")) {
+    settingsTab = "capture";
+    state.setup.certificateSha256 = "8A:72:" + "CD:".repeat(29) + "E4";
+    state.rotation.pendingSha256 = "4F:19:" + "AB:".repeat(29) + "91";
+    state.rotation.pendingCertificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates-next/mitmproxy-ca-cert.cer";
+    state.rotation.phase = scene.slice("rotation-".length) === "ready" ? "testing" : scene.slice("rotation-".length);
+    state.rotation.pendingTrusted = scene !== "rotation-pending";
+    state.rotation.trialReady = scene === "rotation-ready";
+    if (scene === "rotation-testing") state.profiles = [];
+    if (scene === "rotation-cleanup" || scene === "rotation-interrupted") {
+      state.rotation.previousSha256 = state.setup.certificateSha256;
+      state.rotation.previousTrustScope = "system";
+      state.rotation.previousCertificatePath = "/home/demo/.local/share/io.github.rowro.showmylimits/certificates-previous/mitmproxy-ca-cert.cer";
+      state.setup.certificateSha256 = state.rotation.pendingSha256;
+    }
+    if (scene === "rotation-interrupted") state.setup.certificateExists = false;
+  }
   if (scene === "trust-lost") state.setup.certificateTrusted = false;
   if (scene === "system-ca") {
     state.setup.certificateTrustScope = "system";

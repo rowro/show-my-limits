@@ -77,6 +77,7 @@ mod tests {
             profiles: vec![],
             capture: Default::default(),
             setup: Default::default(),
+            rotation: Default::default(),
             connection_issue: None,
             now: 1000.0,
         };
