@@ -15,6 +15,7 @@ mod macos_trust;
 mod process_tree;
 mod quota;
 mod settings;
+mod support_report;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 mod tray_image;
 mod updates;
@@ -39,6 +40,8 @@ struct PopoverState {
     system_dialog: AtomicBool,
     #[cfg(target_os = "linux")]
     dragging: AtomicBool,
+    #[cfg(target_os = "linux")]
+    awaiting_focus: AtomicBool,
 }
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, State};
@@ -77,6 +80,11 @@ use gnome::{gnome_status, install_gnome_extension, logout_gnome_session};
 #[tauri::command]
 fn get_status(app: tauri::AppHandle, state: State<'_, Shared>) -> AppStatus {
     state.status(&app)
+}
+
+#[tauri::command]
+fn diagnostic_report(app: tauri::AppHandle, state: State<'_, Shared>) -> String {
+    support_report::render(&state.status(&app))
 }
 
 #[tauri::command]
@@ -231,8 +239,22 @@ fn show_popover(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     position_popover(&window, anchor);
+    #[cfg(target_os = "linux")]
+    app.state::<PopoverState>().awaiting_focus.store(true, Ordering::SeqCst);
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+#[cfg(target_os = "linux")]
+fn show_from_tray_menu(app: &tauri::AppHandle, rect: Option<tauri::Rect>) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        // The AppIndicator menu can still own focus while its selection callback runs.
+        // Let GTK close the menu before focusing the panel.
+        gtk::glib::timeout_add_local_once(Duration::from_millis(100), move || {
+            show_popover(&handle, rect);
+        });
+    });
 }
 
 fn contains_physical_point(origin: (i32, i32), size: (u32, u32), point: (f64, f64)) -> bool {
@@ -428,6 +450,7 @@ pub fn run() {
             logout_gnome_session,
             install_gnome_extension,
             get_status,
+            diagnostic_report,
             updates::update_status,
             updates::check_update,
             updates::install_update,
@@ -486,6 +509,9 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         let rect = app.tray_by_id("show-my-limits").and_then(|tray| tray.rect().ok().flatten());
+                        #[cfg(target_os = "linux")]
+                        show_from_tray_menu(app, rect);
+                        #[cfg(not(target_os = "linux"))]
                         show_popover(app, rect);
                     }
                     "quit" => app.exit(0),
@@ -577,10 +603,16 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(target_os = "linux")]
+            if let tauri::WindowEvent::Focused(true) = event {
+                if let Some(state) = window.try_state::<PopoverState>() {
+                    state.awaiting_focus.store(false, Ordering::SeqCst);
+                }
+            }
             if let tauri::WindowEvent::Focused(false) = event {
                 if let Some(state) = window.try_state::<PopoverState>() {
                     #[cfg(target_os = "linux")]
-                    if state.dragging.load(Ordering::SeqCst) {
+                    if state.dragging.load(Ordering::SeqCst) || state.awaiting_focus.load(Ordering::SeqCst) {
                         return;
                     }
                     // Keep the parent GUI available while its own certificate authorization runs.

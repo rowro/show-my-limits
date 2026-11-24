@@ -25,6 +25,7 @@ let busy = false;
 let pendingAction = "";
 let toast: string | null = null;
 let setupError: string | null = null;
+let supportReport: string | null = null;
 let pointerActive = false;
 const deferredRenders = new Set<() => void>();
 function deferDuringPointer(render: () => void): boolean {
@@ -35,8 +36,8 @@ function deferDuringPointer(render: () => void): boolean {
 let renderedView = "";
 let renderedMarkup = "";
 let state: Status = { settings: { theme: "system", hosts: [], clients: ["desktop", "terminal"], additionalProcesses: [], selectedProfile: null, helperPath: "", certificateTrustConfirmed: false },
-  profiles: [], capture: { phase: "stopped", pid: null, startedAt: null, error: null },
-  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateName: null, certificateSha256: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, connectionIssue: null, now: Date.now() / 1000 };
+  profiles: [], capture: { phase: "stopped", pid: null, startedAt: null, error: null, observation: null },
+  setup: { platform: "macos", helperPath: null, certificatePath: "", certificateExists: false, certificateTrusted: false, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: null, certificateSha256: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } }, connectionIssue: null, now: Date.now() / 1000 };
 if (demo) { state = demoStatus(); view = "overview";
   if (new URLSearchParams(location.search).get("demo") === "setup") {
     state.settings.hosts = []; state.profiles = []; state.capture.phase = "stopped"; state.capture.startedAt = null; view = "setup";
@@ -86,6 +87,13 @@ if (demo) applyTheme(state.settings.theme);
 function profile(): Profile | undefined { return state.profiles.find(p => p.id === state.settings.selectedProfile) || state.profiles[0]; }
 function captureActive() { return ["starting", "listening", "stopping"].includes(state.capture.phase); }
 function confirmed() { return state.capture.phase === "listening" && isFresh(profile(), state.now) && !state.connectionIssue; }
+function captureHint() {
+  if (state.connectionIssue) return state.connectionIssue;
+  if (state.capture.observation === "response_received") return "Ответ выбранного сервера получен, но в нём не было заголовков лимитов. Проверь сервер и аккаунт.";
+  if (state.capture.observation === "request_seen") return "Запрос к выбранному серверу перехвачен, но ответа пока нет. Проверь сеть и TLS.";
+  if (state.capture.startedAt != null && state.now - state.capture.startedAt > 30 && state.capture.phase === "listening") return "Запросов к выбранному серверу пока не видно. Проверь домен и имя процесса клиента в настройках.";
+  return null;
+}
 
 function shell() {
   root.innerHTML = `<div class="app-shell">
@@ -108,7 +116,7 @@ function render() {
   document.querySelector(".settings-button")?.setAttribute("aria-pressed", String(view === "settings"));
   const content = document.querySelector<HTMLElement>("#content")!;
   content.classList.toggle("wizard-content", view === "setup");
-  const markup = view === "overview" ? overview() : view === "setup" ? setup() : settings();
+  const markup = view === "overview" ? `${serverContext()}${systemTrustWarning()}${overview()}` : view === "setup" ? setup() : settings();
   if (markup !== renderedMarkup || view !== renderedView) {
     const scroll = view === renderedView ? content.scrollTop : 0;
     document.querySelector("#content-inner")!.innerHTML = markup;
@@ -171,20 +179,41 @@ function restartView() {
     "Терминал — заверши Claude Code и запусти снова.",
     hasAdditionalProcesses ? "Дополнительный клиент — полностью перезапусти приложение." : "",
   ].filter(Boolean);
-  return `<section class="quick-start"><h2>Быстрый старт</h2><p class="quick-start-intro">Отправь сообщение, чтобы увидеть лимиты.</p><ol class="quick-start-steps">
+  const hint = captureHint();
+  return `<section class="quick-start"><h2>Быстрый старт</h2><p class="quick-start-intro">${esc(hint || "Отправь сообщение, чтобы увидеть лимиты.")}</p><ol class="quick-start-steps">
     <li><div><h3>Перезапусти свой клиент</h3><p>${restart.map(text => `<span>${text}</span>`).join("")}</p></div></li>
     <li><div><h3>Напиши что-нибудь в чат</h3></div></li>
     <li><div><h3>Дождись ответа Claude</h3><p>После ответа лимиты появятся здесь.</p></div></li>
   </ol></section>`;
 }
 
+function serverContext() {
+  const server = state.settings.hosts[0] || "не указан";
+  return `<div class="server-context"><div><span>Выбранный сервер</span><strong>${esc(server)}</strong></div><button type="button" class="text-button" data-action="edit-server">Изменить</button></div>`;
+}
+
+function systemTrustWarning(inSettings = false) {
+  const scope = state.setup.certificateTrustScope;
+  if (scope !== "system" && scope !== "user+system") return "";
+  return `<div class="ca-scope-warning" role="note"><strong>CA найден в системном хранилище доверия</strong><p>Его закрытый ключ хранится в данных этого пользователя. Проверь отпечаток ${inSettings ? "ниже" : "в Настройках → Захват"}. Не удаляй доверие до проверки нового CA.</p></div>`;
+}
+
+function certificateTrustDetails() {
+  const scope = state.setup.certificateTrustScope;
+  const label = scope === "user" ? "Текущий пользователь" : scope === "system" ? "Вся система" : scope === "user+system" ? "Текущий пользователь и вся система" : scope === "none" ? "В проверенном хранилище не найден" : "Не удалось определить";
+  return `<p class="field-help">Область доверия: <strong>${label}</strong></p>${systemTrustWarning(true)}<details><summary>Отпечаток действующего CA</summary><code class="fingerprint">${esc(state.setup.certificateSha256 || "Не удалось прочитать")}</code><p class="field-help">Сравни SHA-256 перед изменением доверия. Замена старого CA пока не реализована.</p></details>`;
+}
+
 function overview() {
   const item = profile();
   if (needsSetup(state)) return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Сначала подключим Claude</h2><p>Подготовь перехватчик, сертификат<br>и выбери сервер. Затем появятся лимиты.</p><button class="primary" data-view="setup">Перейти к подключению${icon("arrow")}</button></div>`;
+  if (state.capture.phase === "starting") return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>Запускаем перехват</h2><p>${state.setup.platform === "linux" ? "Если появится запрос прав, подтверди его. " : ""}После подтверждения готовности здесь появятся шаги для Claude.</p></div>`;
   if (needsClientRestart(state)) return restartView();
-  if (!item) return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>${captureActive() ? "Ждём лимиты" : "Всё готово к подключению"}</h2><p>${captureActive() ? "Отправь сообщение в Claude.<br>Показатели появятся с новым ответом." : "Запусти захват. Затем полностью перезапусти Claude<br>и отправь сообщение."}</p>${!captureActive() ? `<button class="primary" data-action="start" ${busy ? "disabled" : ""}>Запустить захват</button>` : ""}</div>`;
-  const picker = `<span class="host-name" title="${esc(item.host)}">${esc(item.host)}</span>`;
-  return `<div class="profile-row">${picker}<span class="last-updated">Обновлено ${age(Math.max(0, state.now - item.observedAt))}</span></div>
+  if (!item) {
+    const failed = state.capture.phase === "stopped" && !!state.capture.error;
+    return `<div class="empty"><img class="empty-logo" src="${brandLogo}" alt=""/><h2>${failed ? "Захват не запущен" : captureActive() ? "Ждём лимиты" : "Всё готово к подключению"}</h2><p>${failed ? "Причина указана ниже. После успешного запуска появятся шаги для Claude." : captureActive() ? esc(captureHint() || "Отправь сообщение в Claude. Показатели появятся с новым ответом.") : "Запусти захват. Затем полностью перезапусти Claude и отправь сообщение."}</p>${!captureActive() && !failed ? `<button class="primary" data-action="start" ${busy ? "disabled" : ""}>Запустить захват</button>` : ""}</div>`;
+  }
+  return `<div class="profile-row"><span class="last-updated">Обновлено ${age(Math.max(0, state.now - item.observedAt))}</span></div>
     ${windowCard("5h", "5 часов", item)}${windowCard("7d", "7 дней", item)}
     ${!isFresh(item, state.now) ? '<p class="hint stale">Показатели устарели. Ждём новый ответ Claude.</p>' : ""}
     ${item.status === "rejected" ? '<p class="inline-warning">Сервер сообщает о достижении лимита.</p>' : ""}`;
@@ -192,7 +221,7 @@ function overview() {
 
 function linuxCertificateHelp(confirm = true) {
   const ready = state.setup.certificateExists;
-  return `<p>В Ubuntu / Debian выполни в терминале:</p><pre class="trust-command"><code>${esc(linuxTrustCommands(state.setup.certificatePath))}</code></pre><button type="button" class="secondary" data-action="copy-trust-commands" ${!ready ? "disabled" : ""}>Скопировать команды</button><p>После успешного выполнения ${confirm ? "нажми «Я добавил доверие» и " : ""}перезапусти клиент.</p><p class="field-help">В других дистрибутивах добавь этот публичный CA штатным способом. Некоторые клиенты используют отдельное хранилище доверия.</p>`;
+  return `<p>В Ubuntu / Debian выполни в терминале:</p><p class="field-help">Эти команды добавят CA в системное хранилище. Ему смогут доверять другие пользователи и приложения компьютера; храни ключ CA только у себя.</p><pre class="trust-command"><code>${esc(linuxTrustCommands(state.setup.certificatePath))}</code></pre><button type="button" class="secondary" data-action="copy-trust-commands" ${!ready ? "disabled" : ""}>Скопировать команды</button><p>После успешного выполнения ${confirm ? "нажми «Я добавил доверие» и " : ""}перезапусти клиент.</p><p class="field-help">В других дистрибутивах добавь этот публичный CA штатным способом. Некоторые клиенты используют отдельное хранилище доверия.</p>`;
 }
 
 function setup() {
@@ -208,7 +237,7 @@ function setup() {
   const certificateFile = state.setup.certificatePath.split(/[\\/]/).pop() || "mitmproxy-ca-cert.cer";
   const identity = ready ? `<div class="certificate-identity"><p>Имя сертификата в хранилище: <strong>${esc(name || "имя не удалось прочитать")}</strong></p><details><summary>Файл и отпечаток SHA-256</summary><p>Файл экспорта: <code>${esc(certificateFile)}</code>. Его имя отличается от имени сертификата.</p><p>Если сертификатов с таким именем несколько, сравни SHA-256 в окне сведений:</p><code class="fingerprint">${esc(state.setup.certificateSha256 || "Отпечаток не удалось прочитать")}</code></details></div>` : "";
   const trust = state.setup.platform === "macos"
-    ? `<ol class="trust-steps"><li>Нажми «Импортировать сертификат» ниже. В окне добавления выбери связку <strong>«Система»</strong> → «Добавить». macOS может запросить пароль.</li><li>В «Связке ключей» выбери слева <strong>«Система»</strong>, сверху — <strong>«Сертификаты»</strong>. Если слева нет списка связок: «Вид» → «Показать связки ключей».</li><li>В поиске введи <strong>${esc(name || "limits-mitmproxy")}</strong>. Ищи во вкладке «Сертификаты», а не «Пароли» или «Мои сертификаты».</li><li>Открой найденный сертификат двойным щелчком → «Доверие» → «При использовании этого сертификата» → <strong>«Всегда доверять»</strong>. Закрой окно и подтверди изменение.</li><li>Полностью перезапусти Claude, затем нажми «Я добавил доверие».</li></ol><p class="field-help">Не появился диалог импорта? В «Связке ключей» выбери «Файл» → «Импортировать объекты…» и укажи файл из кнопки «Показать файл».</p>`
+    ? `<ol class="trust-steps"><li>Нажми «Импортировать сертификат» ниже. В окне добавления выбери связку <strong>«Вход»</strong> текущего пользователя → «Добавить». macOS может запросить пароль.</li><li>В «Связке ключей» выбери слева <strong>«Вход»</strong>, сверху — <strong>«Сертификаты»</strong>. Если слева нет списка связок: «Вид» → «Показать связки ключей».</li><li>В поиске введи <strong>${esc(name || "limits-mitmproxy")}</strong>. Ищи во вкладке «Сертификаты», а не «Пароли» или «Мои сертификаты».</li><li>Открой найденный сертификат двойным щелчком → «Доверие» → «При использовании этого сертификата» → <strong>«Всегда доверять»</strong>. Закрой окно и подтверди изменение.</li><li>Полностью перезапусти Claude, затем нажми «Я добавил доверие».</li></ol><p class="field-help">Не появился диалог импорта? В «Связке ключей» выбери «Файл» → «Импортировать объекты…» и укажи файл из кнопки «Показать файл».</p>`
     : state.setup.platform === "windows"
       ? "В мастере импорта выбери «Текущий пользователь» → «Доверенные корневые центры сертификации». Затем перезапусти клиент."
       : linuxCertificateHelp();
@@ -218,9 +247,10 @@ function setup() {
   const steps = [
     `<section class="setup-step"><span class="step-number">1</span><div><h3>Подготовка</h3><p>${!helper ? installing ? progress : busy ? "Ищем mitmproxy и готовим загрузку…" : setupError ? "Подготовка остановлена." : "Ищем mitmproxy…" : !ready ? busy ? "Создаём локальный сертификат…" : "Сертификат ещё не создан." : "Перехватчик и сертификат готовы."}</p><p class="field-help">Приложение само найдёт mitmdump или загрузит проверенную версию и создаст отдельный локальный сертификат.</p>${!busy && (!helper || !ready) ? `<button class="secondary" data-action="prepare-setup">Повторить подготовку</button>` : ""}${!state.setup.installSupported && !helper ? '<p class="field-help">Для этой архитектуры укажи установленный mitmdump вручную.</p>' : ""}${showManualHelper ? `<details><summary>Указать свой mitmdump</summary><form id="helper-form"><input name="helperPath" aria-label="Путь к mitmdump" placeholder="Путь к mitmdump"/><button class="secondary setup-link" type="submit">Использовать</button></form></details>` : ""}${helper ? `<details class="helper-location"><summary>Где установлен</summary><p class="helper-path">${esc(state.setup.helperPath)}</p></details>` : ""}</div></section>`,
     `<section class="setup-step"><span class="step-number ${trusted ? "done" : ""}">${trusted ? icon("check") : "2"}</span><div><h3>Доверие сертификату <span class="pill ${trusted ? "good" : ""}">${trusted ? "Готово" : "Нужна установка"}</span></h3>
-    ${state.setup.platform === "macos" ? `<p>${trusted ? "Доверие настроено. После включения перехватчика полностью выйди из Claude через ⌘Q и открой его заново." : "Добавим сертификат в связку «Система» и настроим доверие для HTTPS. macOS может запросить два подтверждения: для импорта и для доверия. Пароль вводится в системных окнах."}</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${busy && pendingAction === "install-certificate" ? "Ожидаем разрешения…" : trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
+    ${state.setup.platform === "macos" ? `<p>${trusted ? "Доверие настроено. После включения перехватчика полностью выйди из Claude через ⌘Q и открой его заново." : "Добавим сертификат в связку текущего пользователя и настроим доверие для HTTPS. macOS может запросить подтверждение; пароль вводится только в системном окне."}</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${busy && pendingAction === "install-certificate" ? "Ожидаем разрешения…" : trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
     ${state.setup.platform === "windows" ? `<p>Установим текущий сертификат в доверенные корневые центры текущего пользователя Windows.</p><button class="primary" data-action="install-certificate" ${!ready || busy || trusted ? "disabled" : ""}>${icon("shield")}${trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
     ${identity}
+    ${systemTrustWarning()}
     ${manualTrust}
     <p class="subtle">Получение нового ответа Claude подтвердит, что клиент доверяет сертификату.</p></div></section>`,
     `<section class="setup-step"><span class="step-number ${configured ? "done" : ""}">${configured ? icon("check") : "3"}</span><div><h3>Сервер и процессы <span class="pill ${configured ? "good" : ""}">${configured ? "Выбраны" : "Не выбраны"}</span></h3><form id="setup-form">${connectionFields({ ...state.settings, ...(setupDraft || {}) }, !setupDraft)}</form></div></section>`
@@ -243,10 +273,11 @@ function settings() {
     <div id="settings-general" role="tabpanel" aria-labelledby="tab-general" ${settingsTab !== "general" ? "hidden" : ""}>
     <fieldset><legend>Оформление</legend><div class="theme-switch" role="group" aria-label="Тема">${([['system','Система'],['light','Светлая'],['dark','Тёмная']] as const).map(([value, label]) => `<button type="button" data-theme="${value}" class="${s.theme === value ? "selected" : ""}" aria-label="${label}" title="${label}" aria-pressed="${s.theme === value}">${icon(value)}</button>`).join("")}</div></fieldset>
     <fieldset><legend>Запуск</legend><label class="client-option"><input type="checkbox" id="launch-at-login" ${state.setup.launchAtLogin ? "checked" : ""} ${state.setup.launchAtLogin == null ? "disabled" : ""}/><span><strong>Запускать вместе с ОС</strong><small>В фоне, со значком в трее.</small></span></label><p class="field-help">${state.setup.launchAtLogin == null ? "Не удалось прочитать настройку автозапуска." : state.setup.platform === "macos" ? "Для автозапуска держи приложение в «Программах»." : "Настройка применяется сразу."}</p></fieldset>
+    <fieldset><legend>Диагностика</legend><p class="field-help">Отчёт содержит только состояние компонентов. Пути, серверы и данные запросов в него не входят. Просмотри текст перед копированием.</p><button type="button" class="secondary" data-action="make-report">Собрать отчёт</button><div id="support-report">${supportReport ? `<pre class="support-report">${esc(supportReport)}</pre><button type="button" class="secondary" data-action="copy-report">Скопировать отчёт</button>` : ""}</div></fieldset>
     <section id="gnome-section"></section>
     </div><div id="settings-updates" role="tabpanel" aria-labelledby="tab-updates" ${settingsTab !== "updates" ? "hidden" : ""}><section id="updates-section"></section></div>
     <div id="settings-capture" role="tabpanel" aria-labelledby="tab-capture" ${settingsTab !== "capture" ? "hidden" : ""}>
-    <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p><details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Система» открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="${state.setup.platform === "windows" ? "install-certificate" : "open-certificate"}">${state.setup.platform === "windows" ? "Установить текущий сертификат" : "Открыть сертификат"}</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
+    <fieldset><legend>Сертификат и доверие</legend><p class="field-help">Имя сертификата: <strong>${esc(state.setup.certificateName || "не удалось прочитать")}</strong></p>${certificateTrustDetails()}<details><summary>Как настроить доверие</summary>${state.setup.platform === "linux" ? `<div class="trust-guide">${linuxCertificateHelp(false)}</div>` : `<p class="field-help">${state.setup.platform === "macos" ? "В связке «Вход» текущего пользователя открой сертификат → «Доверие» → «Всегда доверять»." : "Импортируй сертификат в «Доверенные корневые центры сертификации» текущего пользователя."}</p><button type="button" class="secondary" data-action="${state.setup.platform === "windows" ? "install-certificate" : "open-certificate"}">${state.setup.platform === "windows" ? "Установить текущий сертификат" : "Открыть сертификат"}</button>`}<button type="button" class="text-button setup-link" data-action="reveal-certificate">Показать файл</button></details></fieldset>
     ${connectionFields({ ...s, ...(settingsDraft || {}) })}
     <p class="field-help">Если изменить сервер или процессы, захват перезапустится при сохранении.</p></div></form>`;
 }
@@ -281,9 +312,10 @@ function renderFooter() {
   const updateLabel = updatePhase === "checking" ? "Проверяем…" : updatePhase === "downloading" ? `Загружаем${updateState.total ? ` ${Math.floor(updateState.downloaded / updateState.total * 100)}%` : "…"}` : updatePhase === "installing" ? "Устанавливаем…" : updateAvailable ? "Доступно обновление" : "Проверить обновления";
   const updateTitle = updateAvailable ? `${updateState.manualInstall ? "Скачать" : "Установить"} версию ${updateState.version || ""}` : updateLabel;
   setMarkupIfChanged(document.querySelector("#footer")!, `<div class="footer-bottom"><div class="footer-left"><span class="version">${esc(appVersion)}</span><button class="text-button footer-update ${updateAvailable ? "available" : ""}" data-action="${updateAction}" title="${esc(updateTitle)}" aria-label="${esc(updateTitle)}" ${updateWorking ? "disabled" : ""}>${esc(updateLabel)}</button></div><button class="text-button" data-action="quit">Выйти</button></div>`);
-  const message = toast || state.setup.certificateTrustError || (!state.setup.helperPath && state.setup.installation.error) || state.capture.error || state.connectionIssue;
+  const message = toast || state.setup.certificateSecurityIssue || state.setup.certificateTrustError || (!state.setup.helperPath && state.setup.installation.error) || state.capture.error || state.connectionIssue;
   const notice = document.querySelector("#notice")!;
-  setMarkupIfChanged(notice, message ? `<div class="notice">${icon("warning")}<span>${esc(message)}</span><button class="icon-button" data-action="dismiss" aria-label="Закрыть сообщение">${icon("close")}</button></div>` : "");
+  const retry = phase === "stopped" && !!state.capture.error && message === state.capture.error;
+  setMarkupIfChanged(notice, message ? `<div class="notice">${icon("warning")}<span>${esc(message)}${retry ? '<button type="button" class="notice-retry" data-action="start">Повторить запуск</button>' : ""}</span><button class="icon-button" data-action="dismiss" aria-label="Закрыть сообщение">${icon("close")}</button></div>` : "");
 }
 
 async function refresh() {
@@ -337,6 +369,24 @@ async function prepareSetup() {
 }
 
 async function action(name: string) {
+  if (name === "edit-server") { settingsTab = "capture"; view = "settings"; toast = null; render(); return; }
+  if (name === "make-report") {
+    try {
+      supportReport = native ? await invoke<string>("diagnostic_report") : "Show My Limits (browser preview)\nStatus: no native diagnostics";
+      const target = document.querySelector("#support-report");
+      if (target) target.innerHTML = `<pre class="support-report">${esc(supportReport)}</pre><button type="button" class="secondary" data-action="copy-report">Скопировать отчёт</button>`;
+      schedulePanelSize();
+    } catch (error) { toast = `Не удалось собрать диагностику: ${String(error)}`; renderFooter(); }
+    return;
+  }
+  if (name === "copy-report" && supportReport) {
+    try {
+      await navigator.clipboard.writeText(supportReport);
+      const button = document.querySelector('[data-action="copy-report"]');
+      if (button) button.textContent = "Скопировано";
+    } catch { toast = "Не удалось скопировать отчёт. Выдели текст и скопируй вручную."; renderFooter(); }
+    return;
+  }
   if (name === "copy-trust-commands") {
     try {
       await navigator.clipboard.writeText(linuxTrustCommands(state.setup.certificatePath));
@@ -363,7 +413,7 @@ async function action(name: string) {
   if (name === "setup-back" && !busy) { setupStep = 1; render(); return; }
   if (!native) {
     if (["install-certificate", "confirm-trust"].includes(name)) { state.settings.certificateTrustConfirmed = true; state.setup.certificateTrusted = true; setupStep = 2; }
-    if (name === "start") { state.capture.phase = "starting"; state.capture.startedAt = state.now; }
+    if (name === "start") { state.capture.phase = "starting"; state.capture.startedAt = state.now; state.capture.error = null; }
     if (name === "stop") state.capture.phase = "stopped";
     render(); return;
   }
@@ -504,7 +554,7 @@ root.addEventListener("change", async event => {
 
 const devScenes = [
   ["limits", "Лимиты"], ["low", "Лимиты заканчиваются"], ["exhausted", "Лимит исчерпан"], ["stale", "Устаревшие данные"],
-  ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["stopped", "Перехват выключен"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
+  ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["system-ca", "CA в системе"], ["stopped", "Перехват выключен"], ["capture-error", "Ошибка запуска захвата"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
   ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Доверие"], ["setup-2", "3 · Сервер и процессы"],
 ];
 function setDevScene(scene: string) {
@@ -521,16 +571,21 @@ function setDevScene(scene: string) {
   setupDraft = null; settingsDraft = null; toast = null; setupError = null; busy = false; pendingAction = "";
   view = scene === "settings" ? "settings" : "overview";
   if (scene === "trust-lost") state.setup.certificateTrusted = false;
+  if (scene === "system-ca") {
+    state.setup.certificateTrustScope = "system";
+    state.setup.certificateSha256 = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+  }
   if (scene === "low" || scene === "exhausted") {
     state.profiles[0].windows["5h"].utilization = scene === "low" ? 0.92 : 1;
     state.profiles[0].windows["7d"].utilization = 0.84;
     if (scene === "exhausted") state.profiles[0].status = "rejected";
   }
   if (scene === "stale") state.profiles[0].observedAt = state.now - 7200;
-  if (scene === "quickstart" || scene === "stopped") {
+  if (scene === "quickstart" || scene === "stopped" || scene === "capture-error") {
     state.profiles = [];
     state.capture.startedAt = scene === "quickstart" ? state.now : null;
     state.capture.phase = scene === "quickstart" ? "listening" : "stopped";
+    if (scene === "capture-error") state.capture.error = "Не удалось открыть графический запрос прав для перехвата Linux. Проверьте установку Show My Limits и наличие zenity.";
   }
   if (scene.startsWith("setup-")) {
     setupStep = Number(scene.slice(-1)); view = "setup";

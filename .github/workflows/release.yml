@@ -81,6 +81,13 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: node scripts/check-release.mjs
+      - name: Build terminal utility
+        run: cargo build --manifest-path cli/Cargo.toml --locked --release --target ${{ matrix.target }}
+      - name: Stage CLI for Debian package
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p src-tauri/package
+          install -m 755 cli/target/${{ matrix.target }}/release/sml src-tauri/package/sml
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -97,8 +104,15 @@ jobs:
           uploadUpdaterJson: false
           uploadUpdaterSignatures: true
           uploadWorkflowArtifacts: true
-      - name: Build terminal utility
-        run: cargo build --manifest-path cli/Cargo.toml --locked --release --target ${{ matrix.target }}
+      - name: Verify CLI in Debian package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package=$(find src-tauri/target/${{ matrix.target }}/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)
+          test -n "$package"
+          install_dir=$(mktemp -d)
+          dpkg-deb -x "$package" "$install_dir"
+          test -x "$install_dir/usr/bin/sml"
       - name: Package terminal utility
         shell: bash
         env:

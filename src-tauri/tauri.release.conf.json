@@ -1,5 +1,12 @@
 {
   "bundle": {
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/bin/sml": "package/sml"
+        }
+      }
+    }
   }
 }

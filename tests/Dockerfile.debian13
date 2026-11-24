@@ -1,0 +1,23 @@
+FROM node:22-trixie AS node
+FROM rust:1.98-trixie
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libwebkit2gtk-4.1-dev libssl-dev librsvg2-dev \
+    libayatana-appindicator3-dev patchelf dpkg-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+COPY . .
+RUN npm ci && npm test && npm run check:release
+RUN cargo build --manifest-path cli/Cargo.toml --locked --release
+RUN install -Dm755 cli/target/release/sml src-tauri/package/sml
+RUN npm exec tauri -- build --bundles deb --config src-tauri/tauri.release.conf.json --no-sign
+RUN package=$(find src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit) \
+    && test -n "$package" \
+    && dpkg-deb -x "$package" /tmp/sml-package \
+    && test -x /tmp/sml-package/usr/bin/sml \
+    && /tmp/sml-package/usr/bin/sml --help

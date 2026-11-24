@@ -68,7 +68,17 @@ class AddonTests(unittest.TestCase):
         flow = self.flow()
         flow.response.headers = {"Content-Type": "text/event-stream"}
         self.addon.responseheaders(flow)
-        self.assertFalse((Path(self.temporary.name) / "state.json").exists())
+        state = self.read()
+        self.assertEqual(state["health"]["kind"], "response_received")
+        self.assertEqual(state["profiles"], [])
+
+    def test_request_without_response_records_only_category(self):
+        flow = self.flow(path="/secret/path?token=private", org="secret-org")
+        self.addon.requestheaders(flow)
+        state = self.read()
+        self.assertEqual(state["health"]["kind"], "request_seen")
+        self.assertNotIn("secret/path", json.dumps(state))
+        self.assertNotIn("secret-org", json.dumps(state))
 
     def test_organizations_stay_separate_and_bad_values_are_unknown(self):
         self.addon.responseheaders(self.flow(org="one"))

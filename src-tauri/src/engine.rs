@@ -71,6 +71,7 @@ pub struct CaptureStatus {
     pub pid: Option<u32>,
     pub started_at: Option<f64>,
     pub error: Option<String>,
+    pub observation: Option<String>,
 }
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +82,8 @@ pub struct SetupStatus {
     pub certificate_exists: bool,
     pub certificate_trusted: Option<bool>,
     pub certificate_trust_error: Option<String>,
+    pub certificate_security_issue: Option<String>,
+    pub certificate_trust_scope: Option<String>,
     pub certificate_name: Option<String>,
     pub certificate_sha256: Option<String>,
     pub installation: Installation,
@@ -250,14 +253,15 @@ impl Shared {
                 signal_stop(child);
             }
             inner.stop_at = Some(timestamp);
-            inner.error = Some("Перехватчик не подтвердил готовность за 90 секунд. Запуск отменён. Проверьте запрос прав и повторите попытку.".into());
+            let issue = inner.capture_issue.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            inner.error = Some(issue.unwrap_or_else(|| "Перехватчик не подтвердил готовность за 90 секунд. Запуск отменён. Проверьте запрос прав и повторите попытку.".into()));
         }
         let profiles: Vec<_> = state
             .profiles
             .into_iter()
             .filter(|profile| inner.settings.hosts.contains(&profile.host))
             .collect();
-        let connection_issue = state.health.filter(|health| active && timestamp - health.observed_at < 120.0
+        let connection_issue = state.health.as_ref().filter(|health| active && timestamp - health.observed_at < 120.0
             && profiles.iter().filter(|p| p.host == health.host).all(|p| p.observed_at < health.observed_at))
             .and_then(|health| match health.kind.as_str() {
                 "certificate_client" => Some(format!("Одно из соединений клиента отклонило сертификат прокси для {}. Если ответы Claude не приходят, полностью перезапустите клиент.", health.host)),
@@ -309,6 +313,9 @@ impl Shared {
                 pid,
                 started_at: pid.map(|_| inner.started_at),
                 error: inner.error.clone(),
+                observation: state.health.as_ref()
+                    .filter(|health| active && timestamp - health.observed_at < 120.0)
+                    .map(|health| health.kind.clone()),
             },
             setup: SetupStatus {
                 platform: std::env::consts::OS.into(),
@@ -319,6 +326,17 @@ impl Shared {
                 certificate_exists: certificate.is_file(),
                 certificate_trusted,
                 certificate_trust_error,
+                certificate_security_issue: crate::certificate::security_issue(&self.paths.certificates).map(str::to_owned),
+                certificate_trust_scope: {
+                    #[cfg(target_os = "macos")]
+                    { certificate.is_file().then(|| crate::macos_trust::trust_scope(&certificate).ok()).flatten().map(str::to_owned) }
+                    #[cfg(target_os = "linux")]
+                    { certificate.is_file().then(|| crate::certificate::debian_system_trust(&certificate)).flatten().map(|present| if present { "system" } else { "none" }.to_owned()) }
+                    #[cfg(target_os = "windows")]
+                    { certificate.is_file().then(|| crate::windows_trust::trust_scope(&certificate).ok()).flatten().map(str::to_owned) }
+                    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+                    { None }
+                },
                 certificate_name: identity.as_ref().map(|d| d.name.clone()),
                 certificate_sha256: identity.map(|d| d.sha256),
                 installation: self
@@ -657,7 +675,7 @@ impl Shared {
             .try_lock()
             .map_err(|_| "Установка сертификата уже выполняется.")?;
         crate::certificate::install(&self.paths.certificates.join("mitmproxy-ca-cert.cer"))?;
-        // Complete only after native import and administrator-domain HTTPS trust read-back succeed.
+        // Complete only after native import and current-user HTTPS trust read-back succeed.
         let mut settings = self
             .inner
             .lock()
@@ -765,6 +783,7 @@ impl Shared {
             && generated.join("mitmproxy-ca.pem").is_file()
             && generated.join("mitmproxy-dhparam.pem").is_file();
         if ready {
+            crate::certificate::secure_new_store(&generated)?;
             publish_new_ca(&generated, &self.paths.certificates)
         } else {
             Err("Не удалось подготовить сертификат. Проверьте установленный mitmdump.".into())
@@ -1067,6 +1086,8 @@ mod tests {
         assert!(!result.contains("secret"));
         assert!(!result.contains("Подключение"));
         assert!(capture_diagnostic("cancelled TLS connection").is_none());
+        assert!(capture_diagnostic("sudo: unable to execute askpass program /secret/path")
+            .unwrap().contains("графический запрос прав"));
     }
 
     #[cfg(unix)]

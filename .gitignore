@@ -25,5 +25,6 @@ __pycache__/
 /tools/mock-claude/claude.exe
 
 /cli/target/
+/src-tauri/package/sml
 
 /tools/release-verifier/target/

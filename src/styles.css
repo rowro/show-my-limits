@@ -38,6 +38,7 @@ textarea:focus-visible, input:focus-visible, select:focus-visible {
 .certificate-identity details p { margin-top: 8px; }
 .certificate-identity strong { color: var(--ink); }
 .fingerprint { display: block; overflow-wrap: anywhere; font-size: 9px; line-height: 1.6; user-select: text; color: var(--ink); }
+.support-report { margin: 9px 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); font-size: 9px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
 .certificate-identity { margin-top: 12px; }
 .manual-certificate { margin: 12px 0 0; }
@@ -173,6 +174,17 @@ header { padding-bottom: 12px; }
 :root[data-platform="linux"] .brand:active { cursor: grabbing; }
 
 .trust-command { margin: 10px 0; padding: 10px; background: var(--accent-soft); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 9px; line-height: 1.6; user-select: text; }
+
+.server-context { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; margin-bottom: 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
+.server-context > div { min-width: 0; }
+.server-context span { display: block; color: var(--muted); font-size: 9px; margin-bottom: 3px; }
+.server-context strong { display: block; overflow-wrap: anywhere; font-size: 11px; font-weight: 600; }
+.server-context button { flex-shrink: 0; color: var(--accent); font-size: 10px; }
+.notice-retry { display: block; margin-top: 6px; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 10px; font-weight: 600; text-align: left; }
+.ca-scope-warning { margin: 0 0 10px; padding: 9px 10px; border-radius: 8px; background: var(--warning-bg); color: var(--warning); font-size: 10px; line-height: 1.45; }
+.ca-scope-warning strong { display: block; margin-bottom: 3px; }
+.ca-scope-warning p { margin: 0; }
+.profile-row:has(.last-updated:only-child) { justify-content: flex-end; }
 
 /* Windows owns outer rounding and the frame. Fill the WebView up to that clip
    instead of drawing a second, more rounded panel inside the native window. */

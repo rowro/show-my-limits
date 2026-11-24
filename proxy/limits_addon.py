@@ -88,6 +88,12 @@ class ShowMyLimitsAddon:
 
     def requestheaders(self, flow):
         flow.request.stream = True
+        server = getattr(flow, "server_conn", None)
+        candidates = [host_name(getattr(server, "sni", None)), host_name(flow.request.host)]
+        host = next((name for name in candidates if name in self.hosts), None)
+        if host is not None:
+            self.health = {"kind": "request_seen", "host": host, "observedAt": time.time()}
+            self.publish()
 
     def responseheaders(self, flow):
         if flow.response is None:
@@ -100,12 +106,10 @@ class ShowMyLimitsAddon:
             return
         quota = parse_headers(flow.response.headers)
         if quota is None:
-            # An HTTP response proves a completed TLS connection even when this
-            # endpoint carries no quota headers. Do not leave an older TLS
-            # failure on screen while the client is successfully communicating.
-            if self.health and self.health.get("host") == host and self.health.get("kind") in {
+            # Record only the category: no URL, status code, headers or body.
+            if not (self.health and self.health.get("host") != host and self.health.get("kind") in {
                 "certificate_client", "certificate_server", "tls_client", "tls_server", "network_ipv6", "network_unreachable"
-            }:
+            }):
                 self.health = {"kind": "response_received", "host": host, "observedAt": time.time()}
                 self.publish()
             return

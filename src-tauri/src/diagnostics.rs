@@ -17,11 +17,19 @@ pub fn capture_diagnostic(line: &str) -> Option<&'static str> {
             "Не найден zenity для графического запроса прав. Установите его: sudo apt install zenity.",
         );
     }
+    if line.contains("unable to execute askpass program")
+        || line.contains("no askpass program specified")
+    {
+        return Some(
+            "Не удалось открыть графический запрос прав для перехвата Linux. Проверьте установку Show My Limits и наличие zenity.",
+        );
+    }
     if [
         "failed to elevate privileges",
         "not running as root",
         "a terminal is required",
         "a password is required",
+        "no password was provided",
         "no tty present",
     ]
     .iter()

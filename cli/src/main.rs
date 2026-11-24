@@ -35,7 +35,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 const ID: &str = "io.github.rowro.showmylimits";
-const HELP: &str = "Show My Limits — terminal monitor\n\n  sml setup                  Install mitmproxy and prepare the shared CA\n  sml trust                  Explicitly install/trust the shared CA\n  sml run [--host DOMAIN]     Capture and display quotas (Ctrl+C stops capture)\n  sml watch                  Display an existing GUI/CLI capture (Ctrl+C exits viewer)\n  sml status [--json]         Print current quotas\n  sml doctor                 Show paths, helper and certificate identity\n\nrun also accepts repeatable --process NAME.\n--host/--process apply only to this run; saved GUI settings are preserved.\nThe GUI and CLI share data and certificates. No Python or desktop is required.\n";
+const HELP: &str = "Show My Limits — terminal monitor\n\n  sml setup                  Install mitmproxy and prepare the shared CA\n  sml trust                  Explicitly install/trust the shared CA\n  sml run [--host DOMAIN]     Capture and display quotas (Ctrl+C stops capture)\n  sml watch                  Display an existing GUI/CLI capture (Ctrl+C exits viewer)\n  sml status [--json]         Print current quotas\n  sml doctor                 Show paths, helper and certificate identity\n  sml doctor --share         Show a report without paths, hosts or traffic\n\nrun also accepts repeatable --process NAME.\n--host/--process apply only to this run; saved GUI settings are preserved.\nThe GUI and CLI share data and certificates. No Python or desktop is required.\n";
 fn now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -183,6 +183,7 @@ fn setup(paths: &Paths) -> Result<(), String> {
     {
         return Err("CA initialization produced incomplete material".into());
     }
+    certificate::secure_new_store(&generated)?;
     if paths.ca().exists() {
         fs::remove_dir(paths.ca()).map_err(|_| "Existing CA material was preserved")?;
     }
@@ -242,9 +243,15 @@ fn display(state: Option<&quota::ProxyState>) -> String {
         return out + "Waiting for a live capture. Start the app or sml run.\n";
     };
     if state.profiles.is_empty() {
-        out.push_str(
-            "Waiting for Claude: restart the client, send a message and wait for its response.\n",
-        );
+        let hint = match state.health.as_ref().map(|health| health.kind.as_str()) {
+            Some("response_received") => "A response from the selected server was captured, but it had no quota headers. Check the server and account.\n",
+            Some("request_seen") => "A request to the selected server was captured, but no response has arrived yet. Check network and TLS.\n",
+            Some("certificate_client" | "certificate_server") => "A TLS certificate was rejected. Check CA trust and restart the client.\n",
+            Some("network_ipv6" | "network_unreachable") => "The selected server could not be reached. Check routing and IPv6.\n",
+            Some("tls_client" | "tls_server") => "TLS did not complete. Check the certificate and network.\n",
+            _ => "No request to the selected server has been observed. Check the configured host and client process, then send a message.\n",
+        };
+        out.push_str(hint);
     }
     for profile in &state.profiles {
         out.push_str(&format!("\n{}\n", profile.host));
@@ -302,8 +309,11 @@ fn execute() -> Result<(), String> {
         println!("sml {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    if matches!(command, "setup" | "trust" | "doctor") && args.len() != 1 {
+    if matches!(command, "setup" | "trust") && args.len() != 1 {
         return Err(format!("Usage: sml {command}"));
+    }
+    if command == "doctor" && args.len() != 1 && args.as_slice() != ["doctor", "--share"] {
+        return Err("Usage: sml doctor [--share]".into());
     }
     let paths = Paths::new()?;
     match command {
@@ -315,7 +325,7 @@ fn execute() -> Result<(), String> {
                     return Err("Run sml setup first".into());
                 }
                 println!(
-                    "Explicit trust installation for Debian/Ubuntu (review and run):\n  sudo install -m 644 '{}' /usr/local/share/ca-certificates/show-my-limits.crt\n  sudo update-ca-certificates\nOther distributions: install this CA using your distribution trust tools.\nRestart your client afterwards.",
+                    "This command only prints instructions; it has not changed trust.\nExplicit system-wide trust installation for Debian/Ubuntu (review and run). Other users and applications may also trust this CA:\n  sudo install -m 644 '{}' /usr/local/share/ca-certificates/show-my-limits.crt\n  sudo update-ca-certificates\nRun sml doctor afterward to check the Debian CA bundle. Clients may use a different trust store.\nOther distributions: install this CA using your distribution trust tools.\nRestart your client afterwards.",
                     paths.cert().display().to_string().replace('\'', "'\\''")
                 );
                 Ok(())
@@ -366,6 +376,38 @@ fn execute() -> Result<(), String> {
             }
         }
         "doctor" => {
+            if args.get(1).is_some_and(|arg| arg == "--share") {
+                let session = match std::env::var("XDG_SESSION_TYPE").ok().as_deref() {
+                    Some("wayland") => "wayland",
+                    Some("x11") => "x11",
+                    _ => "other/unknown",
+                };
+                let cert = paths.cert();
+                let trusted = if cert.is_file() {
+                    #[cfg(target_os = "linux")]
+                    { match certificate::debian_system_trust(&cert) { Some(true) => "present in Debian CA bundle", Some(false) => "missing from Debian CA bundle", None => "not checked" } }
+                    #[cfg(not(target_os = "linux"))]
+                    { match trusted(&cert) { Ok(true) => "yes", Ok(false) => "no", Err(_) => "not checked" } }
+                } else { "no" };
+                #[cfg(target_os = "macos")]
+                let scope = if cert.is_file() { macos_trust::trust_scope(&cert).unwrap_or("unknown") } else { "none" };
+                #[cfg(target_os = "windows")]
+                let scope = if cert.is_file() { windows_trust::trust_scope(&cert).unwrap_or("unknown") } else { "none" };
+                #[cfg(target_os = "linux")]
+                let scope = if cert.is_file() { match certificate::debian_system_trust(&cert) { Some(true) => "system-wide (Debian CA bundle)", Some(false) => "not in Debian CA bundle", None => "unknown" } } else { "none" };
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                let scope = "unknown";
+                let live = snapshot(&paths);
+                let fresh = live.as_ref().is_some_and(|state| state.profiles.iter().any(|profile| (0.0..600.0).contains(&(now() - profile.observed_at))));
+                println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA file permissions: {}\nCapture live: {}\nFresh quota: {}",
+                    env!("CARGO_PKG_VERSION"), std::env::consts::OS, session,
+                    if paths.helper().is_ok() { "present" } else { "missing" },
+                    if cert.is_file() { "present" } else { "missing" }, trusted, scope,
+                    if certificate::security_issue(&paths.ca()).is_some() { "needs review" } else { "no issue detected" },
+                    if live.is_some() { "yes" } else { "no" },
+                    if fresh { "yes" } else { "no" });
+                return Ok(());
+            }
             println!(
                 "Data: {}\nSettings: {}\nHelper: {}",
                 paths.data.display(),
@@ -377,8 +419,16 @@ fn execute() -> Result<(), String> {
             );
             if let Some(c) = certificate::details(&paths.cert()) {
                 println!("CA: {}\nSHA-256: {}", c.name, c.sha256);
+                if let Some(issue) = certificate::security_issue(&paths.ca()) {
+                    println!("CA security: {issue}");
+                }
                 #[cfg(target_os = "linux")]
-                println!("System trust: not checked; run sml trust for distribution instructions.");
+                println!("Debian system CA bundle: {} (client may use a different trust store).",
+                    match certificate::debian_system_trust(&paths.cert()) {
+                        Some(true) => "contains this CA",
+                        Some(false) => "does not contain this CA",
+                        None => "could not be checked",
+                    });
                 #[cfg(not(target_os = "linux"))]
                 println!("Trusted by OS: {}", trusted(&paths.cert())?);
             } else {
@@ -508,8 +558,10 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
                 }
                 capture = Some(child);
                 owner = Some(lock);
+                eprintln!("Selected server: {}", config.hosts.join(", "));
+                eprintln!("Client processes: Claude, claude{}", if config.additional_processes.is_empty() { String::new() } else { format!(", {}", config.additional_processes.join(", ")) });
                 eprintln!(
-                    "Capture started. Restart your client and send a message. Ctrl+C stops only this capture."
+                    "Capture process launched. Wait for readiness, then restart your client and send a message. Ctrl+C stops only this capture."
                 );
             }
             Err(e) => {
@@ -536,9 +588,9 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
         }
         let state = snapshot(paths);
         if capture.is_some() && now() > deadline && state.is_none() {
-            return Err(
-                "Capture did not become ready in 90 seconds. Check OS capture permissions.".into(),
-            );
+            return Err(issue.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_else(||
+                "Capture did not become ready in 90 seconds. Check OS capture permissions.".into()
+            ));
         }
         let text = if capture.is_some() && state.is_none() {
             "Show My Limits\nStarting capture… Waiting for the helper and OS permission.\n".into()

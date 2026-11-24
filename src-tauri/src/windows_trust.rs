@@ -74,6 +74,17 @@ pub fn is_trusted(path: &Path) -> Result<bool, String> {
     }
     Ok(false)
 }
+pub fn trust_scope(path: &Path) -> Result<&'static str, String> {
+    let der = der(path)?;
+    let user = contains(&open(CERT_SYSTEM_STORE_CURRENT_USER, "ROOT", true)?, &der);
+    let machine = contains(&open(CERT_SYSTEM_STORE_LOCAL_MACHINE, "ROOT", true)?, &der);
+    Ok(match (user, machine) {
+        (true, true) => "user+system",
+        (true, false) => "user",
+        (false, true) => "system",
+        (false, false) => "none",
+    })
+}
 pub fn install(path: &Path) -> Result<(), String> {
     let der = der(path)?;
     let store = open(CERT_SYSTEM_STORE_CURRENT_USER, "ROOT", false)?;

@@ -41,6 +41,9 @@ test('restart reminder waits for a quota response from this capture session', ()
   const state=demoStatus();
   state.capture.startedAt=state.now; state.profiles[0].observedAt=state.now-1;
   assert.equal(needsClientRestart(state),true);
+  state.capture.phase='starting';
+  assert.equal(needsClientRestart(state),false);
+  state.capture.phase='listening';
   state.profiles[0].observedAt=state.now+1;
   assert.equal(needsClientRestart(state),false);
   state.now+=3600;

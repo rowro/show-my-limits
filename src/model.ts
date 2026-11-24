@@ -5,8 +5,8 @@ export interface Profile { id: string; host: string; observedAt: number; windows
 export interface Status {
   settings: Settings;
   profiles: Profile[];
-  capture: { phase: "stopped" | "starting" | "listening" | "stopping"; pid: number | null; startedAt: number | null; error: string | null };
-  setup: { platform: string; helperPath: string | null; certificatePath: string; certificateExists: boolean; certificateTrusted: boolean | null; certificateTrustError: string | null; certificateName: string | null; certificateSha256: string | null; installSupported: boolean; launchAtLogin: boolean | null; installation: { phase: string; downloaded: number; total: number | null; error: string | null } };
+  capture: { phase: "stopped" | "starting" | "listening" | "stopping"; pid: number | null; startedAt: number | null; error: string | null; observation: string | null };
+  setup: { platform: string; helperPath: string | null; certificatePath: string; certificateExists: boolean; certificateTrusted: boolean | null; certificateTrustError: string | null; certificateSecurityIssue: string | null; certificateTrustScope: string | null; certificateName: string | null; certificateSha256: string | null; installSupported: boolean; launchAtLogin: boolean | null; installation: { phase: string; downloaded: number; total: number | null; error: string | null } };
   connectionIssue: string | null;
   now: number;
 }
@@ -22,7 +22,7 @@ export function needsSetup(state: Status): boolean {
 
 export function needsClientRestart(state: Status): boolean {
   const started = state.capture.startedAt;
-  return ["starting", "listening"].includes(state.capture.phase) && started != null &&
+  return state.capture.phase === "listening" && started != null &&
     !state.profiles.some(profile => profile.observedAt >= started);
 }
 
@@ -61,7 +61,7 @@ export function demoStatus(): Status {
   return { settings: { theme: "system", hosts: ["gateway.example"], clients: ["desktop", "terminal"], additionalProcesses: [], selectedProfile: null, helperPath: "", certificateTrustConfirmed: true },
     profiles: [{ id: "demo", host: "gateway.example", observedAt: now - 18, status: "allowed", windows: {
       "5h": { utilization: 0.27, reset: now + 8100 }, "7d": { utilization: 0.58, reset: now + 259200 }
-    }}], capture: { phase: "listening", pid: null, startedAt: now - 100, error: null },
-    setup: { platform: "macos", helperPath: "/example/mitmdump", certificatePath: "/example/show-my-limits-ca.cer", certificateExists: true, certificateTrusted: true, certificateTrustError: null, certificateName: "limits-mitmproxy", certificateSha256: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } },
+    }}], capture: { phase: "listening", pid: null, startedAt: now - 100, error: null, observation: "quota_received" },
+    setup: { platform: "macos", helperPath: "/example/mitmdump", certificatePath: "/example/show-my-limits-ca.cer", certificateExists: true, certificateTrusted: true, certificateTrustError: null, certificateSecurityIssue: null, certificateTrustScope: null, certificateName: "limits-mitmproxy", certificateSha256: null, installSupported: true, launchAtLogin: false, installation: { phase: "idle", downloaded: 0, total: null, error: null } },
     connectionIssue: null, now };
 }

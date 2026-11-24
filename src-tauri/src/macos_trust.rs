@@ -15,17 +15,10 @@ use security_framework::{
     trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate},
 };
 use security_framework_sys::trust_settings::{
-    SecTrustSettingsSetTrustSettings, kSecTrustSettingsDomainAdmin,
+    SecTrustSettingsSetTrustSettings, kSecTrustSettingsDomainUser,
     kSecTrustSettingsResultTrustRoot,
 };
 use std::{fs, path::Path};
-
-// Only import is elevated. Trust is set later in the real GUI process, never in this shell.
-const IMPORT_SCRIPT: &str = r#"on run argv
-    set certPath to item 1 of argv
-    set importCommand to "/usr/bin/security add-certificates -k /Library/Keychains/System.keychain " & quoted form of certPath
-    do shell script importCommand with administrator privileges with prompt "Show My Limits: добавление локального сертификата прокси в системную связку ключей."
-end run"#;
 
 fn contains_certificate(
     keychain: &SecKeychain,
@@ -43,31 +36,12 @@ fn contains_certificate(
         Err(error) => {
             return Err(system_error(
                 error.code(),
-                "Не удалось проверить системную связку ключей",
+                "Не удалось проверить связку ключей пользователя",
             ));
         }
     };
     let expected = certificate.to_der();
     Ok(items.into_iter().any(|item| matches!(item, SearchResult::Ref(Reference::Certificate(found)) if found.to_der() == expected)))
-}
-
-fn privileged_import(path: &Path) -> Result<(), String> {
-    let output = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", IMPORT_SCRIPT])
-        .arg(path)
-        .output()
-        .map_err(|e| format!("Не удалось запросить разрешение на импорт: {e}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let message = String::from_utf8_lossy(&output.stderr);
-    if message.contains("(-128)") {
-        return Err(system_error(-128, "Импорт сертификата"));
-    }
-    Err(format!(
-        "Не удалось импортировать сертификат: {}",
-        message.trim()
-    ))
 }
 
 fn system_error(code: i32, operation: &str) -> String {
@@ -103,20 +77,46 @@ pub fn is_trusted(path: &Path) -> Result<bool, String> {
     Ok(trust.evaluate_with_error().is_ok())
 }
 
+pub fn trust_scope(path: &Path) -> Result<&'static str, String> {
+    let bytes = fs::read(path).map_err(|e| format!("Не удалось прочитать сертификат: {e}"))?;
+    let (_, pem) = x509_parser::pem::parse_x509_pem(&bytes)
+        .map_err(|_| "Некорректный сертификат.".to_string())?;
+    let certificate = SecCertificate::from_der(&pem.contents).map_err(|e| e.to_string())?;
+    let has_trust = |domain| match TrustSettings::new(domain).tls_trust_settings_for_certificate(&certificate) {
+        Ok(Some(TrustSettingsForCertificate::TrustRoot)) => Ok(true),
+        Ok(_) => Ok(false),
+        Err(error) if error.code() == -25300 => Ok(false),
+        Err(error) => Err(system_error(error.code(), "Не удалось проверить область доверия")),
+    };
+    let admin = has_trust(Domain::Admin)?;
+    // A locked or unavailable login keychain must not hide an existing
+    // machine-wide trust setting. In that case "system" means at least Admin.
+    let user = match has_trust(Domain::User) {
+        Ok(user) => user,
+        Err(_) if admin => false,
+        Err(error) => return Err(error),
+    };
+    Ok(match (user, admin) {
+        (true, true) => "user+system",
+        (true, false) => "user",
+        (false, true) => "system",
+        (false, false) => "none",
+    })
+}
+
 pub fn install(path: &Path) -> Result<(), String> {
     let bytes = fs::read(path).map_err(|e| format!("Не удалось прочитать сертификат: {e}"))?;
     let (_, pem) =
         x509_parser::pem::parse_x509_pem(&bytes).map_err(|_| "Некорректный файл сертификата.")?;
     let certificate = SecCertificate::from_der(&pem.contents)
         .map_err(|e| system_error(e.code(), "Не удалось открыть сертификат"))?;
-    let keychain = SecKeychain::open("/Library/Keychains/System.keychain")
-        .map_err(|e| system_error(e.code(), "Не удалось открыть системную связку ключей"))?;
-    // System keychain writes require elevated privileges; SecCertificateAddToKeychain
-    // does not elevate a normal app and fails with errSecWrPerm (-61).
+    let keychain = SecKeychain::default()
+        .map_err(|e| system_error(e.code(), "Не удалось открыть связку ключей пользователя"))?;
     if !contains_certificate(&keychain, &certificate)? {
-        privileged_import(path)?;
+        certificate.add_to_keychain(Some(keychain.clone()))
+            .map_err(|e| system_error(e.code(), "Не удалось импортировать сертификат"))?;
         if !contains_certificate(&keychain, &certificate)? {
-            return Err("Импорт завершился, но сертификат не найден в системной связке. Доверие не изменено.".into());
+            return Err("Импорт завершился, но сертификат не найден в связке ключей пользователя. Доверие не изменено.".into());
         }
     }
     let settings = ssl_settings();
@@ -125,15 +125,15 @@ pub fn install(path: &Path) -> Result<(), String> {
     let status = unsafe {
         SecTrustSettingsSetTrustSettings(
             certificate.as_concrete_TypeRef(),
-            kSecTrustSettingsDomainAdmin,
+            kSecTrustSettingsDomainUser,
             settings.as_CFTypeRef(),
         )
     };
     if status != 0 {
         return Err(system_error(status, "Не удалось настроить доверие"));
     }
-    // Presence alone is insufficient: verify the persisted administrator-domain TLS trust setting.
-    match TrustSettings::new(Domain::Admin).tls_trust_settings_for_certificate(&certificate) {
+    // Presence alone is insufficient: verify the persisted user-domain TLS trust setting.
+    match TrustSettings::new(Domain::User).tls_trust_settings_for_certificate(&certificate) {
         Ok(Some(TrustSettingsForCertificate::TrustRoot)) => Ok(()),
         Ok(_) => Err("Сертификат импортирован, но доверие для HTTPS не подтверждено. Настройка не завершена.".into()),
         Err(error) => Err(system_error(error.code(), "Не удалось проверить сохранённое доверие")),
@@ -176,30 +176,12 @@ mod tests {
     }
 
     #[test]
-    fn import_script_compiles_without_running_or_changing_keychain() {
-        assert!(IMPORT_SCRIPT.contains("security add-certificates"));
-        assert!(!IMPORT_SCRIPT.contains("add-trusted-cert"));
-        let temporary = tempfile::tempdir().unwrap();
-        let output = std::process::Command::new("/usr/bin/osacompile")
-            .arg("-o")
-            .arg(temporary.path().join("import.scpt"))
-            .args(["-e", IMPORT_SCRIPT])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[test]
-    fn system_keychain_search_reads_certificates_without_importing() {
+    fn user_keychain_search_reads_certificates_without_importing() {
         let (_, pem) =
             x509_parser::pem::parse_x509_pem(include_bytes!("../tests/fixtures/test-ca.pem"))
                 .unwrap();
         let certificate = SecCertificate::from_der(&pem.contents).unwrap();
-        let keychain = SecKeychain::open("/Library/Keychains/System.keychain").unwrap();
+        let keychain = SecKeychain::default().unwrap();
         assert!(!contains_certificate(&keychain, &certificate).unwrap());
     }
 }
