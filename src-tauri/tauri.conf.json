@@ -54,6 +54,11 @@
       "icons/icon.ico"
     ],
     "createUpdaterArtifacts": false,
+    "linux": {
+      "deb": {
+        "depends": ["sudo", "zenity"]
+      }
+    },
     "macOS": {
       "signingIdentity": "-"
     }
