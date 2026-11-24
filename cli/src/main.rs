@@ -236,6 +236,17 @@ impl Drop for Managed {
 fn snapshot(paths: &Paths) -> Option<quota::ProxyState> {
     coordination::active_state(&paths.proxy(), now())
 }
+fn share_observation(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("request_seen") => "request without response",
+        Some("response_received") => "response without quota",
+        Some("certificate_client" | "certificate_server") => "certificate rejected",
+        Some("network_ipv6" | "network_unreachable") => "network unreachable",
+        Some("tls_client" | "tls_server") => "TLS incomplete",
+        Some("quota_received") => "quota received",
+        _ => "none/unknown",
+    }
+}
 fn display(state: Option<&quota::ProxyState>) -> String {
     let mut out = String::from("Show My Limits\n");
     let Some(state) = state else {
@@ -404,15 +415,7 @@ fn execute() -> Result<(), String> {
                     Some(_) => "more than 30 days",
                     None => "unknown",
                 };
-                let observation = match live.as_ref().and_then(|state| state.health.as_ref()).map(|health| health.kind.as_str()) {
-                    Some("request_seen") => "request without response",
-                    Some("response_received") => "response without quota",
-                    Some("certificate_client" | "certificate_server") => "certificate rejected",
-                    Some("network_ipv6" | "network_unreachable") => "network unreachable",
-                    Some("tls_client" | "tls_server") => "TLS incomplete",
-                    Some("quota_received") => "quota received",
-                    _ => "none/unknown",
-                };
+                let observation = share_observation(live.as_ref().and_then(|state| state.health.as_ref()).map(|health| health.kind.as_str()));
                 println!("sml {}\nOS: {}\nSession: {}\nHelper: {}\nCA: {}\nCA trusted: {}\nCA scope: {}\nCA lifetime: {}\nCA store security: {}\nCapture live: {}\nFresh quota: {}\nLast observation: {}",
                     env!("CARGO_PKG_VERSION"), std::env::consts::OS, session,
                     if paths.helper().is_ok() { "present" } else { "missing" },
@@ -637,6 +640,11 @@ fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+    #[test]
+    fn share_observation_never_echoes_untrusted_health() {
+        assert_eq!(share_observation(Some("network_ipv6")), "network unreachable");
+        assert_eq!(share_observation(Some("secret.example token=private")), "none/unknown");
+    }
     #[test]
     fn live_snapshot_has_remaining_spent_and_reset() {
         let time = now();
