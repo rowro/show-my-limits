@@ -1,6 +1,6 @@
 [package]
 name = "show-my-limits"
-version = "0.3.0"
+version = "0.3.1"
 description = "A small cross-platform Claude quota monitor"
 authors = ["Show My Limits contributors"]
 edition = "2024"

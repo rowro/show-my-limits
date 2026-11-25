@@ -1,14 +1,11 @@
-Show My Limits 0.3.0
+Show My Limits 0.3.1
 
-- New certificates work only for the server you choose. The setup wizard asks for the server first and then creates a certificate authority limited to that server. Its private key is never saved, so stolen app files cannot be used to impersonate other sites.
-- Certificate trust is added for the current user only. Settings show the trust scope and warn about certificates from older versions, which can be replaced explicitly with a step-by-step flow.
-- When upgrading from a version whose setup was never finished, an untrusted or incomplete old certificate is set aside instead of being offered for trust. Its key is removed by a separate cleanup action.
-- On macOS, capture start now explains when macOS is waiting for you to allow the Mitmproxy Redirector network extension, with a button that opens System Settings. Start no longer times out while that approval is pending.
-- After trusting a certificate, restart Claude Desktop and open Claude Code sessions: running processes do not see the new certificate.
-- The main screen shows the selected server, which helps when sharing a screenshot.
-- Linux: fixed a focus race that could close the panel right after opening it from the tray menu. The DEB package now installs `sml` and depends on `sudo` and `zenity`.
-- Diagnostics: GUI and `sml doctor --share` produce a report without server names, paths or traffic.
+- Replacing a certificate from an older version is now one button on the main screen. The app creates the new certificate and asks the system to trust it. It then checks the new certificate with a test capture and switches to it after a fresh response from Claude. Restart Claude Desktop and Claude Code sessions when asked.
+- The old certificate is removed with a "Delete old certificate" button. Only the exact certificate is removed from the system trust stores, after one system prompt (password on macOS, confirmation or UAC on Windows, sudo on Debian/Ubuntu). Its key is deleted after the app re-checks that nothing still trusts it.
+- Replacement is offered only when it is needed: a certificate from an older version, a certificate issued for a different server, or one that expires within 30 days.
+- An untrusted certificate left by an unfinished older installation is now cleaned up automatically during setup.
+- On Linux the app shows the trust commands for the new certificate and continues on its own once they have been run.
 
-Existing settings and certificates are preserved until you replace the certificate. Quit older app instances before installing the new version.
+Removing the old certificate has not yet been tested on every OS. If the button reports an error, the old certificate stays in place and can be removed manually by the fingerprint shown in Settings.
 
 macOS packages remain ad-hoc signed without Apple notarization. Windows packages do not have Authenticode signing. Standalone CLI archives are separate from the GUI installers.
