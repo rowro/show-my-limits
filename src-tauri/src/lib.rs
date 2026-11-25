@@ -209,8 +209,12 @@ async fn install_certificate(app: tauri::AppHandle) -> Result<(), String> {
     result.map_err(|_| "Не удалось получить результат установки сертификата.".to_string())?
 }
 
-#[tauri::command]
-async fn install_replacement_certificate(app: tauri::AppHandle) -> Result<(), String> {
+/// Run an operation that shows an OS confirmation or password dialog on the
+/// main thread, keeping the panel from hiding while the dialog has focus.
+async fn with_system_dialog(
+    app: tauri::AppHandle,
+    operation: fn(&tauri::AppHandle) -> Result<(), String>,
+) -> Result<(), String> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let handle = app.clone();
     app.run_on_main_thread(move || {
@@ -219,7 +223,7 @@ async fn install_replacement_certificate(app: tauri::AppHandle) -> Result<(), St
             let _ = window.set_focus();
         }
         handle.state::<PopoverState>().system_dialog.store(true, Ordering::SeqCst);
-        let result = handle.state::<Shared>().install_replacement_certificate();
+        let result = operation(&handle);
         handle.state::<PopoverState>().system_dialog.store(false, Ordering::SeqCst);
         if let Some(window) = handle.get_webview_window("main") {
             if !window.is_focused().unwrap_or(false) { let _ = window.hide(); }
@@ -228,7 +232,22 @@ async fn install_replacement_certificate(app: tauri::AppHandle) -> Result<(), St
     }).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || receiver.recv())
         .await.map_err(|e| e.to_string())?
-        .map_err(|_| "Не удалось получить результат установки нового CA.".to_string())?
+        .map_err(|_| "Не удалось получить результат системного запроса.".to_string())?
+}
+
+#[tauri::command]
+async fn install_replacement_certificate(app: tauri::AppHandle) -> Result<(), String> {
+    with_system_dialog(app, |handle| handle.state::<Shared>().install_replacement_certificate()).await
+}
+
+#[tauri::command]
+async fn begin_replacement(app: tauri::AppHandle) -> Result<(), String> {
+    with_system_dialog(app, |handle| handle.state::<Shared>().begin_replacement(handle)).await
+}
+
+#[tauri::command]
+async fn remove_previous_certificate(app: tauri::AppHandle) -> Result<(), String> {
+    with_system_dialog(app, |handle| handle.state::<Shared>().remove_previous_certificate(handle)).await
 }
 
 #[tauri::command]
@@ -535,6 +554,8 @@ pub fn run() {
             promote_replacement,
             stop_replacement_trial,
             finish_replacement_cleanup,
+            remove_previous_certificate,
+            begin_replacement,
             restore_interrupted_replacement,
             install_certificate,
             install_replacement_certificate,
@@ -621,7 +642,17 @@ pub fn run() {
                 let mut previous_title = String::new();
                 #[cfg(target_os = "linux")]
                 let mut tray_visible = true;
+                let advancing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 loop {
+                    // Automatic replacement steps may stop and start capture;
+                    // run them beside the loop, one at a time.
+                    if !advancing.swap(true, Ordering::SeqCst) {
+                        let (worker, flag) = (handle.clone(), advancing.clone());
+                        tauri::async_runtime::spawn_blocking(move || {
+                            worker.state::<Shared>().advance_replacement(&worker);
+                            flag.store(false, Ordering::SeqCst);
+                        });
+                    }
                     let status = handle.state::<Shared>().status(&handle);
                     let profile = status
                         .profiles

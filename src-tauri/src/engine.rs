@@ -21,6 +21,68 @@ pub fn now() -> f64 {
         .as_secs_f64()
 }
 
+fn replacement_recommended(active: &Path, hosts: &[String], now: f64) -> bool {
+    if !crate::certificate::complete_store(active) {
+        return false;
+    }
+    if crate::certificate::store_format(active) != Some(crate::certificate::StoreFormat::Leaf) {
+        return true;
+    }
+    let covered = crate::certificate::leaf_hosts(active).unwrap_or_default();
+    if hosts.iter().any(|host| !covered.contains(&host.trim().trim_end_matches('.').to_ascii_lowercase())) {
+        return true;
+    }
+    crate::certificate::details(&active.join(crate::certificate::PUBLIC_CA))
+        .is_some_and(|details| (details.expires_at as f64) - now < 30.0 * 86_400.0)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_askpass(app: &AppHandle) -> Result<PathBuf, String> {
+    let askpass = app
+        .path()
+        .resolve("proxy/linux_askpass.sh", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| e.to_string())?;
+    if !askpass.is_file() {
+        return Err("В сборке отсутствует компонент запроса прав Linux. Переустановите приложение.".into());
+    }
+    if !Path::new("/usr/bin/zenity").is_file() {
+        return Err("Для графического запроса прав установите zenity: sudo apt install zenity. Затем повторите.".into());
+    }
+    Ok(askpass)
+}
+
+/// Remove the files that hold exactly this certificate from
+/// /usr/local/share/ca-certificates and rebuild the system bundle, with one
+/// sudo prompt. Files are passed as arguments, never interpolated.
+#[cfg(target_os = "linux")]
+fn remove_debian_trust(app: &AppHandle, cert: &Path) -> Result<(), String> {
+    let files = crate::certificate::debian_local_sources(cert).ok_or(
+        "Старый сертификат найден в каталоге пакетов, в общем файле или каталог не удалось проверить. Удалите его вручную.",
+    )?;
+    let in_bundle = crate::certificate::debian_system_trust(cert) == Some(true);
+    if files.is_empty() {
+        return if in_bundle {
+            Err("Старый сертификат есть в системном списке, но его файл не найден в /usr/local/share/ca-certificates. Удалите его вручную.".into())
+        } else {
+            Ok(())
+        };
+    }
+    let status = Command::new("/usr/bin/sudo")
+        .arg("-A")
+        .args(["/bin/sh", "-c", "/bin/rm -f -- \"$@\" && /usr/sbin/update-ca-certificates >/dev/null", "sh"])
+        .args(&files)
+        .env("SUDO_ASKPASS", linux_askpass(app)?)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("Удаление отменено или не разрешено. Старый сертификат остался доверенным.".into());
+    }
+    Ok(())
+}
+
 fn checked_ca_trust(path: &Path) -> Option<bool> {
     crate::certificate::os_trust(path)
 }
@@ -97,6 +159,18 @@ pub struct Inner {
     pub extension_check: Option<(f64, bool)>,
     /// When the capture last waited for an OS approval; the start deadline counts from it.
     pub approval_seen_at: Option<f64>,
+    /// Set only by the one-button replacement: once the new CA is trusted the
+    /// app starts the trial and promotes it after a fresh response by itself.
+    pub auto_replace: AutoReplace,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AutoReplace {
+    #[default]
+    Off,
+    /// Waiting for the new CA to become trusted (Linux: manual commands).
+    AwaitingTrust,
+    /// Trial started once; waiting for a fresh response through the new CA.
+    Trial,
 }
 pub struct Shared {
     pub paths: Paths,
@@ -166,6 +240,11 @@ pub struct RotationStatus {
     pub previous_certificate_path: Option<String>,
     pub previous_trust_scope: Option<String>,
     pub trial_ready: bool,
+    /// The app advances the replacement on its own (one-button flow).
+    pub automatic: bool,
+    /// The active CA should be replaced: an older format, hosts it does not
+    /// cover or expiry within 30 days. Otherwise replacement stays hidden.
+    pub recommended: bool,
 }
 
 impl AppStatus {
@@ -215,6 +294,7 @@ impl Shared {
                 rotation_trial: false,
                 extension_check: None,
                 approval_seen_at: None,
+                auto_replace: AutoReplace::Off,
             }),
         })
     }
@@ -381,6 +461,8 @@ impl Shared {
             previous_trust_scope: previous_cert.as_deref().and_then(checked_ca_scope),
             trial_optional,
             trial_ready,
+            automatic: inner.auto_replace != AutoReplace::Off,
+            recommended: replacement_recommended(&self.paths.certificates, &inner.settings.hosts, timestamp),
         };
         let connection_issue = state.health.as_ref().filter(|health| active && timestamp - health.observed_at < 120.0
             && profiles.iter().filter(|p| p.host == health.host).all(|p| p.observed_at < health.observed_at))
@@ -722,25 +804,9 @@ impl Shared {
         command.env("SML_RUN_ID", &run_id);
         #[cfg(target_os = "linux")]
         {
-            let askpass = app
-                .path()
-                .resolve(
-                    "proxy/linux_askpass.sh",
-                    tauri::path::BaseDirectory::Resource,
-                )
-                .map_err(|e| e.to_string())?;
-            if !askpass.is_file() {
-                return Err(
-                    "В сборке отсутствует компонент запроса прав Linux. Переустановите приложение."
-                        .into(),
-                );
-            }
-            if !Path::new("/usr/bin/zenity").is_file() {
-                return Err("Для графического запроса прав установите zenity: sudo apt install zenity. Затем повторите запуск.".into());
-            }
             // sudo invokes this only when it needs authentication without a TTY.
             // The GUI never receives the password; it goes directly to sudo.
-            command.env("SUDO_ASKPASS", askpass);
+            command.env("SUDO_ASKPASS", linux_askpass(app)?);
         }
         command
             .args([
@@ -849,6 +915,68 @@ impl Shared {
             .map_err(|e| format!("Сертификат установлен, но не удалось сохранить настройки: {e}"))
     }
 
+    /// One button: create the new CA if needed and ask the OS to trust it.
+    /// Trial capture and promotion then follow automatically from the status
+    /// loop. Linux trusts by the shown commands; the app waits for them.
+    pub fn begin_replacement(&self, app: &AppHandle) -> Result<(), String> {
+        let (pending, _) = crate::certificate::rotation_paths(&self.paths.certificates)?;
+        if !crate::certificate::complete_store(&pending) {
+            self.prepare_replacement(app)?;
+        }
+        self.inner.lock().map_err(|_| "Перехватчик занят.")?.auto_replace = AutoReplace::AwaitingTrust;
+        if checked_ca_trust(&pending.join("mitmproxy-ca-cert.cer")) != Some(true) && !cfg!(target_os = "linux") {
+            if let Err(error) = self.install_replacement_certificate() {
+                self.inner.lock().map_err(|_| "Перехватчик занят.")?.auto_replace = AutoReplace::Off;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Called by the status loop. Each automatic step runs at most once; a
+    /// failure turns automation off and leaves the manual buttons.
+    pub fn advance_replacement(&self, app: &AppHandle) {
+        let mode = match self.inner.lock() { Ok(inner) => inner.auto_replace, Err(_) => return };
+        if mode == AutoReplace::Off {
+            return;
+        }
+        let status = self.status(app);
+        let rotation = &status.rotation;
+        let result = match (mode, rotation.phase.as_str()) {
+            (_, "cleanup" | "none" | "interrupted") => {
+                self.set_auto_replace(AutoReplace::Off);
+                return;
+            }
+            (AutoReplace::AwaitingTrust, "pending") if rotation.pending_trusted == Some(true) => {
+                if rotation.trial_optional {
+                    self.set_auto_replace(AutoReplace::Off);
+                    self.promote_replacement(app)
+                } else {
+                    self.set_auto_replace(AutoReplace::Trial);
+                    self.start_replacement_trial(app)
+                }
+            }
+            (AutoReplace::Trial, "testing") if rotation.trial_ready => {
+                self.set_auto_replace(AutoReplace::Off);
+                self.promote_replacement(app)
+            }
+            // The trial was stopped by the user or failed to start.
+            (AutoReplace::Trial, "pending") => {
+                self.set_auto_replace(AutoReplace::Off);
+                return;
+            }
+            _ => return,
+        };
+        if let Err(error) = result {
+            self.set_auto_replace(AutoReplace::Off);
+            self.inner.lock().unwrap_or_else(|p| p.into_inner()).error = Some(error);
+        }
+    }
+
+    fn set_auto_replace(&self, mode: AutoReplace) {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).auto_replace = mode;
+    }
+
     pub fn install_replacement_certificate(&self) -> Result<(), String> {
         let (pending, retired) = crate::certificate::rotation_paths(&self.paths.certificates)?;
         if fs::symlink_metadata(retired).is_ok() || !crate::certificate::complete_store(&pending) {
@@ -883,6 +1011,7 @@ impl Shared {
     }
 
     pub fn stop_replacement_trial(&self, app: &AppHandle) -> Result<(), String> {
+        self.set_auto_replace(AutoReplace::Off);
         if !self.inner.lock().map_err(|_| "Перехватчик занят.")?.rotation_trial {
             return Ok(());
         }
@@ -891,8 +1020,31 @@ impl Shared {
         self.start(app)
     }
 
+    /// Explicit cleanup button: remove the retired CA from the OS trust
+    /// stores by exact certificate, then delete its directory after the usual
+    /// re-check. Each OS shows its own confirmation or password prompt.
+    pub fn remove_previous_certificate(&self, app: &AppHandle) -> Result<(), String> {
+        let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
+        #[cfg(not(target_os = "linux"))]
+        let _ = app;
+        for old_cert in crate::certificate::retired_certificates(&self.paths.certificates)? {
+            #[cfg(target_os = "macos")]
+            crate::macos_trust::remove_everywhere(&old_cert)?;
+            #[cfg(target_os = "windows")]
+            crate::windows_trust::remove_everywhere(&old_cert)?;
+            #[cfg(target_os = "linux")]
+            remove_debian_trust(app, &old_cert)?;
+        }
+        self.finish_replacement_cleanup_locked()
+    }
+
     pub fn finish_replacement_cleanup(&self) -> Result<(), String> {
         let _setup = crate::coordination::lock(&self.paths.proxy, "setup")?;
+        self.finish_replacement_cleanup_locked()
+    }
+
+    /// The caller holds the setup lock.
+    fn finish_replacement_cleanup_locked(&self) -> Result<(), String> {
         let (_, retired) = crate::certificate::rotation_paths(&self.paths.certificates)?;
         if !crate::certificate::complete_store(&self.paths.certificates) {
             return Err("Действующий CA повреждён; старый ключ сохранён для восстановления.".into());
@@ -972,6 +1124,10 @@ impl Shared {
             // An older version left a CA that nobody trusts (or an incomplete one).
             // Move it aside for explicit cleanup instead of asking to trust its key.
             crate::certificate::replace_abandoned_store(destination, &settings.hosts)?;
+            // Nothing trusted the set-aside store, so its key goes right away
+            // after the same re-check the cleanup button uses. If anything is
+            // in doubt, it stays for the explicit button.
+            let _ = self.finish_replacement_cleanup_locked();
             let mut settings = settings;
             settings.certificate_trust_confirmed = false;
             return self.save_settings(settings).map(|_| ())
@@ -1319,6 +1475,7 @@ mod tests {
                 rotation_trial: false,
                 extension_check: None,
                 approval_seen_at: None,
+                auto_replace: AutoReplace::Off,
             }),
             installation: Mutex::new(Installation::default()),
             certificate_installation: Mutex::new(()),
@@ -1367,6 +1524,17 @@ mod tests {
             assert!(crate::certificate::create_leaf_store(&hosts, &dangling).is_err());
             assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
         }
+    }
+    #[test]
+    fn replacement_is_offered_only_when_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        let active = dir.path().join("certificates");
+        assert!(!replacement_recommended(&active, &["a.example".into()], 0.0));
+        crate::certificate::create_leaf_store(&["a.example".into()], &active).unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        assert!(!replacement_recommended(&active, &["A.example.".into()], now));
+        assert!(replacement_recommended(&active, &["b.example".into()], now));
+        assert!(replacement_recommended(&active, &["a.example".into()], now + 4000.0 * 86_400.0));
     }
     #[test]
     fn quota_evidence_is_conservative() {

@@ -399,6 +399,56 @@ pub fn rotation_paths(active: &Path) -> Result<(std::path::PathBuf, std::path::P
     Ok((parent.join("certificates-next"), parent.join("certificates-previous")))
 }
 
+/// Uppercase SHA-1 of a DER certificate: the identifier OS tools use to
+/// address one exact certificate (`security -Z`, `certutil -delstore`).
+pub fn sha1_hex(der: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, der)
+        .as_ref().iter().map(|b| format!("{b:02X}")).collect()
+}
+
+/// DER of the first certificate in a PEM file.
+pub fn certificate_der(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(path).map_err(|e| format!("Не удалось прочитать сертификат: {e}"))?;
+    let (_, pem) = parse_x509_pem(&bytes).map_err(|_| "Некорректный сертификат.".to_string())?;
+    if pem.label != "CERTIFICATE" {
+        return Err("Некорректный сертификат.".into());
+    }
+    Ok(pem.contents)
+}
+
+/// Files under /usr/local/share/ca-certificates that hold exactly this one
+/// certificate. A file with other certificates, or a copy under the
+/// package-managed /usr/share tree, is never removed automatically: `None`.
+#[cfg(target_os = "linux")]
+pub fn debian_local_sources(cert_path: &Path) -> Option<Vec<std::path::PathBuf>> {
+    if source_tree_contains(cert_path, &[Path::new("/usr/share/ca-certificates")]) != Some(false) {
+        return None;
+    }
+    let expected = certificate_der(cert_path).ok()?;
+    let mut found = Vec::new();
+    let mut pending = vec![std::path::PathBuf::from("/usr/local/share/ca-certificates")];
+    while let Some(path) = pending.pop() {
+        let entries = match fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        for entry in entries {
+            let entry = entry.ok()?;
+            let kind = entry.file_type().ok()?;
+            if kind.is_symlink() { return None; }
+            if kind.is_dir() { pending.push(entry.path()); continue; }
+            if !kind.is_file() || entry.path().extension().is_none_or(|ext| ext != "crt") { continue; }
+            let blocks = pem_blocks(&regular_file(&entry.path())?)?;
+            if blocks.iter().any(|block| block.contents == expected) {
+                if blocks.len() != 1 { return None; }
+                found.push(entry.path());
+            }
+        }
+    }
+    Some(found)
+}
+
 /// Trust of the exact CA in the stores the platform check covers. `None` means
 /// it could not be checked (or no check exists on this platform).
 pub fn os_trust(path: &Path) -> Option<bool> {

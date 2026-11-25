@@ -110,6 +110,62 @@ pub fn install(path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+/// Remove this exact certificate (by DER) from the Root stores. Called only
+/// from the explicit cleanup button. Windows confirms the Current User
+/// deletion itself; Local Machine needs UAC and goes through certutil with the
+/// SHA-1 of this certificate only.
+pub fn remove_everywhere(path: &Path) -> Result<(), String> {
+    let der = der(path)?;
+    let user = open(CERT_SYSTEM_STORE_CURRENT_USER, "ROOT", false)?;
+    let mut context = ptr::null_mut();
+    loop {
+        context = unsafe { CertEnumCertificatesInStore(user.0, context) };
+        if context.is_null() {
+            break;
+        }
+        let bytes = unsafe {
+            std::slice::from_raw_parts((*context).pbCertEncoded, (*context).cbCertEncoded as usize)
+        };
+        if bytes == der {
+            // CertDeleteCertificateFromStore frees the duplicate; the
+            // enumeration context is freed separately.
+            let duplicate = unsafe { CertDuplicateCertificateContext(context) };
+            let deleted = unsafe { CertDeleteCertificateFromStore(duplicate) };
+            let error = std::io::Error::last_os_error();
+            unsafe { CertFreeCertificateContext(context); }
+            if deleted == 0 {
+                return Err(if error.raw_os_error() == Some(1223) {
+                    "Удаление отменено. Старый сертификат остался доверенным.".into()
+                } else {
+                    format!("Windows не разрешила удалить сертификат: {error}")
+                });
+            }
+            break;
+        }
+    }
+    if contains(&open(CERT_SYSTEM_STORE_LOCAL_MACHINE, "ROOT", true)?, &der) {
+        let sha1 = crate::certificate::sha1_hex(&der);
+        debug_assert!(sha1.bytes().all(|b| b.is_ascii_hexdigit()));
+        let script = format!(
+            "$p = Start-Process -FilePath certutil.exe -ArgumentList '-delstore','Root','{sha1}' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode"
+        );
+        let status = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() && contains(&open(CERT_SYSTEM_STORE_LOCAL_MACHINE, "ROOT", true)?, &der) {
+            return Err("Удаление из хранилища компьютера отменено или не разрешено.".into());
+        }
+    }
+    if trust_scope(path)? != "none" {
+        return Err("Удаление завершилось, но Windows всё ещё видит старый сертификат.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
