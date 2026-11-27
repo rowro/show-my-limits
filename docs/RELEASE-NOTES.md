@@ -1,11 +1,9 @@
-Show My Limits 0.3.1
+Show My Limits 0.3.2
 
-- Replacing a certificate from an older version is now one button on the main screen. The app creates the new certificate and asks the system to trust it. It then checks the new certificate with a test capture and switches to it after a fresh response from Claude. Restart Claude Desktop and Claude Code sessions when asked.
-- The old certificate is removed with a "Delete old certificate" button. Only the exact certificate is removed from the system trust stores, after one system prompt (password on macOS, confirmation or UAC on Windows, sudo on Debian/Ubuntu). Its key is deleted after the app re-checks that nothing still trusts it.
-- Replacement is offered only when it is needed: a certificate from an older version, a certificate issued for a different server, or one that expires within 30 days.
-- An untrusted certificate left by an unfinished older installation is now cleaned up automatically during setup.
-- On Linux the app shows the trust commands for the new certificate and continues on its own once they have been run.
+- Windows: on computers where a policy forbids users to trust new root certificates, installing the certificate failed with "Access is denied". The app now explains the cause and offers a separate "Install for the computer" button that adds the same certificate to the computer's trusted roots after a UAC prompt. Without administrator rights, it shows the command to give to an administrator. The certificate still works only for the chosen server.
+- The same option is available when replacing a certificate, and the automatic switch continues after it.
+- `sml trust` on Windows prints the administrator command when the current user's store is refused.
 
-Removing the old certificate has not yet been tested on every OS. If the button reports an error, the old certificate stays in place and can be removed manually by the fingerprint shown in Settings.
+The computer-wide install has not yet been tested on every Windows configuration. If it fails, run the shown command in PowerShell as administrator.
 
 macOS packages remain ad-hoc signed without Apple notarization. Windows packages do not have Authenticode signing. Standalone CLI archives are separate from the GUI installers.
