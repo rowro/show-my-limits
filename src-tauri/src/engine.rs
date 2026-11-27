@@ -1007,7 +1007,7 @@ impl Shared {
     fn install_or_record(&self, certificate: &Path) -> Result<(), String> {
         let result = crate::certificate::install(certificate);
         #[cfg(target_os = "windows")]
-        if result.as_deref().err() == Some(crate::windows_trust::USER_STORE_DENIED) {
+        if result.as_ref().err().map(String::as_str) == Some(crate::windows_trust::USER_STORE_DENIED) {
             self.inner.lock().unwrap_or_else(|p| p.into_inner()).trust_denied = Some(certificate.to_path_buf());
         }
         result
