@@ -241,6 +241,11 @@ async fn install_replacement_certificate(app: tauri::AppHandle) -> Result<(), St
 }
 
 #[tauri::command]
+async fn install_certificate_machine(app: tauri::AppHandle) -> Result<(), String> {
+    with_system_dialog(app, |handle| handle.state::<Shared>().install_certificate_machine()).await
+}
+
+#[tauri::command]
 async fn begin_replacement(app: tauri::AppHandle) -> Result<(), String> {
     with_system_dialog(app, |handle| handle.state::<Shared>().begin_replacement(handle)).await
 }
@@ -556,6 +561,7 @@ pub fn run() {
             finish_replacement_cleanup,
             remove_previous_certificate,
             begin_replacement,
+            install_certificate_machine,
             restore_interrupted_replacement,
             install_certificate,
             install_replacement_certificate,

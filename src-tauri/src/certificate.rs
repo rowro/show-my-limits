@@ -630,6 +630,15 @@ pub fn security_issue(directory: &Path) -> Option<&'static str> {
     None
 }
 
+/// Windows fallback when the current user's Root store is refused.
+#[cfg(target_os = "windows")]
+pub fn install_machine(path: &Path) -> Result<(), String> {
+    if details(path).is_none() {
+        return Err("Сначала создайте корректный сертификат приложения.".into());
+    }
+    crate::windows_trust::install_machine(path)
+}
+
 pub fn install(path: &Path) -> Result<(), String> {
     if details(path).is_none() {
         return Err("Сначала создайте корректный сертификат приложения.".into());

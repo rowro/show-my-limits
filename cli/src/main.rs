@@ -356,7 +356,12 @@ fn execute() -> Result<(), String> {
             }
             #[cfg(target_os = "windows")]
             {
-                certificate::install(&paths.cert())?;
+                if let Err(error) = certificate::install(&paths.cert()) {
+                    if error == windows_trust::USER_STORE_DENIED {
+                        return Err(format!("Windows refused the current user's Root store (policy). An administrator can trust it for this computer:\n  {}", windows_trust::machine_install_command(&paths.cert())));
+                    }
+                    return Err(error);
+                }
                 println!("Certificate installed. Fully restart your client.");
                 Ok(())
             }

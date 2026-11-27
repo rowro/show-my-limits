@@ -21,6 +21,17 @@ pub fn now() -> f64 {
         .as_secs_f64()
 }
 
+fn machine_trust_command(denied: Option<&Path>) -> Option<String> {
+    let path = denied?;
+    if checked_ca_trust(path) != Some(false) {
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    { Some(crate::windows_trust::machine_install_command(path)) }
+    #[cfg(not(target_os = "windows"))]
+    { None }
+}
+
 fn replacement_recommended(active: &Path, hosts: &[String], now: f64) -> bool {
     if !crate::certificate::complete_store(active) {
         return false;
@@ -162,6 +173,9 @@ pub struct Inner {
     /// Set only by the one-button replacement: once the new CA is trusted the
     /// app starts the trial and promotes it after a fresh response by itself.
     pub auto_replace: AutoReplace,
+    /// Certificate that Windows refused for the current user's Root store;
+    /// the UI then offers the machine store with UAC.
+    pub trust_denied: Option<PathBuf>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AutoReplace {
@@ -209,6 +223,9 @@ pub struct SetupStatus {
     pub certificate_hosts: Vec<String>,
     /// An older, never-trusted or incomplete store that the wizard replaces with a leaf-only one.
     pub certificate_replaceable: bool,
+    /// Windows refused per-user trust: command for an administrator, shown
+    /// with the button that installs for the whole computer through UAC.
+    pub machine_trust_command: Option<String>,
     pub installation: Installation,
     pub install_supported: bool,
     pub launch_at_login: Option<bool>,
@@ -295,6 +312,7 @@ impl Shared {
                 extension_check: None,
                 approval_seen_at: None,
                 auto_replace: AutoReplace::Off,
+                trust_denied: None,
             }),
         })
     }
@@ -547,6 +565,7 @@ impl Shared {
                 certificate_format: crate::certificate::store_format(&self.paths.certificates).map(|f| f.as_str().to_owned()),
                 certificate_hosts: crate::certificate::leaf_hosts(&self.paths.certificates).unwrap_or_default(),
                 certificate_replaceable: abandoned_store(&self.paths.certificates),
+                machine_trust_command: machine_trust_command(inner.trust_denied.as_deref()),
                 installation: self
                     .installation
                     .lock()
@@ -901,7 +920,7 @@ impl Shared {
             .certificate_installation
             .try_lock()
             .map_err(|_| "Установка сертификата уже выполняется.")?;
-        crate::certificate::install(&self.paths.certificates.join("mitmproxy-ca-cert.cer"))?;
+        self.install_or_record(&self.paths.certificates.join("mitmproxy-ca-cert.cer"))?;
         // Complete only after native import and current-user HTTPS trust read-back succeed.
         let mut settings = self
             .inner
@@ -982,7 +1001,43 @@ impl Shared {
         if fs::symlink_metadata(retired).is_ok() || !crate::certificate::complete_store(&pending) {
             return Err("Новый CA не подготовлен или прежняя очистка не завершена.".into());
         }
-        crate::certificate::install(&pending.join("mitmproxy-ca-cert.cer"))
+        self.install_or_record(&pending.join("mitmproxy-ca-cert.cer"))
+    }
+
+    fn install_or_record(&self, certificate: &Path) -> Result<(), String> {
+        let result = crate::certificate::install(certificate);
+        #[cfg(target_os = "windows")]
+        if result.as_deref().err() == Some(crate::windows_trust::USER_STORE_DENIED) {
+            self.inner.lock().unwrap_or_else(|p| p.into_inner()).trust_denied = Some(certificate.to_path_buf());
+        }
+        result
+    }
+
+    /// Explicit fallback after Windows refused the current user's store:
+    /// trust the same certificate for the whole computer through UAC.
+    pub fn install_certificate_machine(&self) -> Result<(), String> {
+        let certificate = self.inner.lock().map_err(|_| "Настройки заняты.")?.trust_denied.clone()
+            .ok_or("Установка для компьютера не требуется.")?;
+        #[cfg(target_os = "windows")]
+        crate::certificate::install_machine(&certificate)?;
+        #[cfg(not(target_os = "windows"))]
+        if !certificate.as_os_str().is_empty() {
+            return Err("Доступно только в Windows.".into());
+        }
+        {
+            let mut inner = self.inner.lock().map_err(|_| "Настройки заняты.")?;
+            inner.trust_denied = None;
+            if certificate == self.paths.certificates.join("mitmproxy-ca-cert.cer") {
+                let mut settings = inner.settings.clone();
+                settings.certificate_trust_confirmed = true;
+                drop(inner);
+                return self.save_settings(settings).map(|_| ())
+                    .map_err(|e| format!("Сертификат установлен, но не удалось сохранить настройки: {e}"));
+            }
+            // A replacement certificate: let the automatic switch continue.
+            inner.auto_replace = AutoReplace::AwaitingTrust;
+            Ok(())
+        }
     }
 
     pub fn promote_replacement(&self, app: &AppHandle) -> Result<(), String> {
@@ -1476,6 +1531,7 @@ mod tests {
                 extension_check: None,
                 approval_seen_at: None,
                 auto_replace: AutoReplace::Off,
+                trust_denied: None,
             }),
             installation: Mutex::new(Installation::default()),
             certificate_installation: Mutex::new(()),

@@ -217,6 +217,14 @@ function previousCaNote() {
   return `<div class="ca-scope-warning" role="note"><strong>Старый сертификат отложен</strong><p>${removalHelp()}</p><button type="button" class="secondary" data-action="remove-previous-certificate" ${busy ? "disabled" : ""}>Удалить старый сертификат</button></div>`;
 }
 
+/** Windows refused per-user trust: offer the whole computer through UAC. */
+function machineTrustFallback() {
+  const command = state.setup.machineTrustCommand;
+  if (!command) return "";
+  const working = busy && pendingAction === "install-certificate-machine";
+  return `<div class="ca-scope-warning" role="note"><strong>Windows не разрешила установку для пользователя</strong><p>Политика этого компьютера запрещает пользователям доверять новым корневым сертификатам. Установите сертификат для всего компьютера — Windows запросит права администратора. Сертификат действует только для вашего сервера.</p><button type="button" class="primary" data-action="install-certificate-machine" ${busy ? "disabled" : ""}>${icon("shield")}${working ? "Ждём подтверждения…" : "Установить для компьютера"}</button><details><summary>Нет прав администратора</summary><p class="field-help">Попросите администратора выполнить в PowerShell от имени администратора:</p><pre class="trust-command"><code>${esc(command)}</code></pre><button type="button" class="secondary" data-action="copy-machine-command">Скопировать команду</button></details></div>`;
+}
+
 function removalHelp() {
   const r = state.rotation;
   if (r.previousTrustScope === "none" || !r.previousSha256) return "Ему уже никто не доверяет. Удалим его ключ с диска.";
@@ -245,6 +253,7 @@ function replacementCard() {
     if (r.pendingTrusted !== true && state.setup.platform === "linux" && r.pendingCertificatePath && r.pendingSha256) {
       return card("Добавьте доверие к новому сертификату", `<p>Выполните в терминале:</p><pre class="trust-command"><code>${esc(linuxReplacementTrustCommands(r.pendingCertificatePath, r.pendingSha256))}</code></pre><button type="button" class="secondary" data-action="copy-replacement-trust">Скопировать команды</button><p class="field-help">${r.automatic ? "Приложение заметит доверие и продолжит само." : ""}</p>${r.automatic ? "" : `<button type="button" class="primary" data-action="begin-replacement" ${busy ? "disabled" : ""}>Продолжить замену</button>`}`);
     }
+    if (r.pendingTrusted !== true && state.setup.machineTrustCommand) return machineTrustFallback();
     if (r.pendingTrusted !== true) return card("Новый сертификат ещё не доверен", `<p>Подтвердите доверие в системном окне.</p><button type="button" class="primary" data-action="begin-replacement" ${busy ? "disabled" : ""}>${working ? "Ждём подтверждения…" : "Установить доверие"}</button>`);
     return r.automatic
       ? card("Переключаемся на новый сертификат…", `<p>Это займёт несколько секунд.</p>`)
@@ -316,7 +325,7 @@ function setup() {
     `<section class="setup-step"><span class="step-number ${trusted && ready ? "done" : ""}">${trusted && ready ? icon("check") : "3"}</span><div><h3>Сертификат и доверие <span class="pill ${trusted && ready ? "good" : ""}">${trusted && ready ? "Готово" : "Нужна установка"}</span></h3>
     ${certificateStatus}
     ${ready && state.setup.platform === "macos" ? `<p>${trusted ? "Доверие настроено." : "Добавим сертификат в связку текущего пользователя и настроим доверие для HTTPS. macOS может запросить подтверждение; пароль вводится только в системном окне."}</p><button class="primary" data-action="install-certificate" ${busy || trusted ? "disabled" : ""}>${icon("shield")}${busy && pendingAction === "install-certificate" ? "Ожидаем разрешения…" : trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
-    ${ready && state.setup.platform === "windows" ? `<p>Установим текущий сертификат в доверенные корневые центры текущего пользователя Windows.</p><button class="primary" data-action="install-certificate" ${busy || trusted ? "disabled" : ""}>${icon("shield")}${trusted ? "Доверие настроено" : "Установить сертификат"}</button>` : ""}
+    ${ready && state.setup.platform === "windows" ? (state.setup.machineTrustCommand && !trusted ? machineTrustFallback() : `<p>Установим текущий сертификат в доверенные корневые центры текущего пользователя Windows.</p><button class="primary" data-action="install-certificate" ${busy || trusted ? "disabled" : ""}>${icon("shield")}${trusted ? "Доверие настроено" : "Установить сертификат"}</button>`) : ""}
     ${ready ? identity : ""}
     ${ready ? manualTrust : ""}
     ${ready ? restartClientsNote() : ""}
@@ -396,7 +405,7 @@ function renderFooter() {
   const updateLabel = updatePhase === "checking" ? "Проверяем…" : updatePhase === "downloading" ? `Загружаем${updateState.total ? ` ${Math.floor(updateState.downloaded / updateState.total * 100)}%` : "…"}` : updatePhase === "installing" ? "Устанавливаем…" : updateAvailable ? "Доступно обновление" : "Проверить обновления";
   const updateTitle = updateAvailable ? `${updateState.manualInstall ? "Скачать" : "Установить"} версию ${updateState.version || ""}` : updateLabel;
   setMarkupIfChanged(document.querySelector("#footer")!, `<div class="footer-bottom"><div class="footer-left"><span class="version">${esc(appVersion)}</span><button class="text-button footer-update ${updateAvailable ? "available" : ""}" data-action="${updateAction}" title="${esc(updateTitle)}" aria-label="${esc(updateTitle)}" ${updateWorking ? "disabled" : ""}>${esc(updateLabel)}</button></div><button class="text-button" data-action="quit">Выйти</button></div>`);
-  const message = toast || (state.setup.certificateFormat === "legacy" && state.rotation.recommended ? null : state.setup.certificateSecurityIssue) || state.setup.certificateTrustError || (!state.setup.helperPath && state.setup.installation.error) || state.capture.error || state.connectionIssue;
+  const message = (toast && state.setup.machineTrustCommand && toast.includes("политика компьютера") ? null : toast) || (state.setup.certificateFormat === "legacy" && state.rotation.recommended ? null : state.setup.certificateSecurityIssue) || state.setup.certificateTrustError || (!state.setup.helperPath && state.setup.installation.error) || state.capture.error || state.connectionIssue;
   const notice = document.querySelector("#notice")!;
   const retry = phase === "stopped" && !!state.capture.error && message === state.capture.error;
   setMarkupIfChanged(notice, message ? `<div class="notice">${icon("warning")}<span>${esc(message)}${retry ? '<button type="button" class="notice-retry" data-action="start">Повторить запуск</button>' : ""}</span><button class="icon-button" data-action="dismiss" aria-label="Закрыть сообщение">${icon("close")}</button></div>` : "");
@@ -499,6 +508,14 @@ async function action(name: string) {
     } catch { toast = "Не удалось скопировать. Выдели команды и скопируй их вручную."; renderFooter(); }
     return;
   }
+  if (name === "copy-machine-command") {
+    try {
+      await navigator.clipboard.writeText(state.setup.machineTrustCommand || "");
+      const button = document.querySelector('[data-action="copy-machine-command"]');
+      if (button) button.textContent = "Скопировано";
+    } catch { toast = "Не удалось скопировать. Выдели команду и скопируй её вручную."; renderFooter(); }
+    return;
+  }
   if (["check-update", "install-update", "open-releases"].includes(name)) {
     if (!native) { updateState.phase=name === "check-update" ? "current" : "idle"; renderFooter(); return; }
     toast = null;
@@ -523,6 +540,7 @@ async function action(name: string) {
     if (name === "start-replacement-trial") { state.rotation.phase = "testing"; state.rotation.trialReady = false; state.profiles = []; state.capture.phase = "listening"; }
     if (name === "promote-replacement") { state.rotation.phase = "cleanup"; state.rotation.previousSha256 = state.setup.certificateSha256; state.rotation.previousTrustScope = "system"; state.setup.certificateSha256 = state.rotation.pendingSha256; }
     if (name === "stop-replacement-trial") { state.rotation.phase = "pending"; state.rotation.trialReady = false; }
+    if (name === "install-certificate-machine") { state.setup.machineTrustCommand = null; state.setup.certificateTrusted = true; state.settings.certificateTrustConfirmed = true; }
     if (name === "begin-replacement") { state.rotation.phase = "testing"; state.rotation.automatic = true; state.rotation.pendingTrusted = true; state.rotation.pendingSha256 = "4F:19:" + "AB:".repeat(29) + "91"; state.rotation.trialReady = false; }
     if (name === "remove-previous-certificate" || name === "finish-replacement-cleanup" || name === "restore-interrupted-replacement") { state.rotation.phase = "none"; state.rotation.recommended = false; }
     if (["install-certificate", "confirm-trust"].includes(name)) { state.settings.certificateTrustConfirmed = true; state.setup.certificateTrusted = true; setupStep = 2; }
@@ -554,6 +572,7 @@ async function action(name: string) {
     if (name === "stop-replacement-trial") await invoke("stop_replacement_trial");
     if (name === "finish-replacement-cleanup") await invoke("finish_replacement_cleanup");
     if (name === "begin-replacement") await invoke("begin_replacement");
+    if (name === "install-certificate-machine") await invoke("install_certificate_machine");
     if (name === "remove-previous-certificate") await invoke("remove_previous_certificate");
     if (name === "restore-interrupted-replacement") await invoke("restore_interrupted_replacement");
     if (name === "install-certificate") await invoke("install_certificate");
@@ -681,7 +700,7 @@ root.addEventListener("change", async event => {
 const devScenes = [
   ["limits", "Лимиты"], ["low", "Лимиты заканчиваются"], ["exhausted", "Лимит исчерпан"], ["stale", "Устаревшие данные"],
   ["quickstart", "Быстрый старт"], ["trust-lost", "Доверие к CA удалено"], ["system-ca", "CA в системе"], ["stopped", "Перехват выключен"], ["capture-error", "Ошибка запуска захвата"], ["starting-extension", "macOS ждёт разрешения"], ["settings", "Настройки"], ["update-available", "Доступно обновление"],
-  ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Сервер и процессы"], ["setup-2", "3 · Сертификат и доверие"], ["setup-old-2", "3 · Старый недоверенный CA"], ["settings-legacy", "Настройки · старый CA"], ["legacy", "Главный · старый CA"],
+  ["setup-0", "1 · Подготовка"], ["setup-1", "2 · Сервер и процессы"], ["setup-2", "3 · Сертификат и доверие"], ["setup-old-2", "3 · Старый недоверенный CA"], ["setup-denied-2", "3 · Windows запретила"], ["settings-legacy", "Настройки · старый CA"], ["legacy", "Главный · старый CA"],
   ["rotation-pending", "CA · подготовлен"], ["rotation-testing", "CA · проверка"], ["rotation-ready", "CA · ответ получен"], ["rotation-untried", "CA · без пробы (лимитов не было)"], ["rotation-cleanup", "CA · очистка"], ["rotation-interrupted", "CA · восстановление"],
 ];
 function setDevScene(scene: string) {
@@ -745,6 +764,7 @@ function setDevScene(scene: string) {
     state.setup.helperPath = setupStep > 0 ? "/example/mitmdump" : null;
     state.setup.certificateExists = setupStep > 1;
     state.settings.certificateTrustConfirmed = false; state.setup.certificateTrusted = false;
+    if (scene === "setup-denied-2") { state.setup.platform = "windows"; state.setup.machineTrustCommand = 'certutil -addstore Root "C:\\Users\\demo\\AppData\\Roaming\\io.github.rowro.showmylimits\\certificates\\mitmproxy-ca-cert.cer"'; }
     if (scene === "setup-old-2") { state.setup.certificateFormat = "legacy"; state.setup.certificateHosts = []; state.setup.certificateReplaceable = true; }
   }
   sessionStorage.setItem("sml-dev-scene", scene);

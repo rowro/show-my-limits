@@ -85,6 +85,44 @@ pub fn trust_scope(path: &Path) -> Result<&'static str, String> {
         (false, false) => "none",
     })
 }
+/// Returned when Windows refuses the Current User Root store, usually because
+/// a policy forbids users to trust new root CAs. The UI then offers the
+/// machine store with UAC as a separate, explicit choice.
+pub const USER_STORE_DENIED: &str = "Windows запретила добавить сертификат в хранилище текущего пользователя: так бывает, если политика компьютера не разрешает пользователям доверять новым корневым сертификатам. Можно установить его для всего компьютера — понадобятся права администратора.";
+
+fn is_access_denied(error: &std::io::Error) -> bool {
+    error.raw_os_error().is_some_and(|code| code == 5 || code == 0x80070005_u32 as i32)
+}
+
+/// Command an administrator can run to trust this file for the computer.
+pub fn machine_install_command(path: &Path) -> String {
+    format!("certutil -addstore Root \"{}\"", path.display())
+}
+
+/// Explicit fallback button: add this exact file to the Local Machine Root
+/// store through certutil with a UAC prompt. The path reaches PowerShell
+/// through an environment variable, never inside the script text.
+pub fn install_machine(path: &Path) -> Result<(), String> {
+    let _ = der(path)?;
+    let script = "$p = Start-Process -FilePath certutil.exe -ArgumentList ('-addstore Root \"' + $env:SML_CERT + '\"') -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode";
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("SML_CERT", path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !is_trusted(path)? {
+        return Err(if status.success() {
+            "Сертификат добавлен, но Windows не подтверждает доверие. Проверьте ограничения системы.".into()
+        } else {
+            "Установка для компьютера отменена или не разрешена.".into()
+        });
+    }
+    Ok(())
+}
+
 pub fn install(path: &Path) -> Result<(), String> {
     let der = der(path)?;
     let store = open(CERT_SYSTEM_STORE_CURRENT_USER, "ROOT", false)?;
@@ -100,10 +138,14 @@ pub fn install(path: &Path) -> Result<(), String> {
         )
     };
     if installed == 0 {
-        return Err(format!(
-            "Windows не разрешила установить сертификат: {}",
-            std::io::Error::last_os_error()
-        ));
+        let error = std::io::Error::last_os_error();
+        return Err(if is_access_denied(&error) {
+            USER_STORE_DENIED.into()
+        } else if error.raw_os_error().is_some_and(|code| code == 1223 || code == 0x800704C7_u32 as i32) {
+            "Установка сертификата отменена. Можно повторить её позже.".into()
+        } else {
+            format!("Windows не разрешила установить сертификат: {error}")
+        });
     }
     if !is_trusted(path)? {
         return Err("Сертификат добавлен, но Windows не подтверждает доверие. Проверьте ограничения системы.".into());
